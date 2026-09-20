@@ -1,0 +1,169 @@
+# vihat-miniapp — Deployment MẪU.
+#
+# Năm biến, năm dòng `env:` tường minh. CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
+# bẫy đằng sau nằm trong deploy/README.md mục "Vì sao env: tường minh". Đọc mục
+# ấy trước khi rút gọn tệp này.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vihat-miniapp
+  namespace: <dien-vao-namespace>
+  labels:
+    app.kubernetes.io/name: vihat-miniapp
+spec:
+  # HAI BẢN SAO, và một hệ quả phải biết: bộ giới hạn theo IP đếm TRONG BỘ NHỚ
+  # của từng tiến trình, nên trần thực tế là 10 lượt/5 phút/IP NHÂN với số bản
+  # sao — 2 bản sao là 20. Xem README gốc, mục "Chặn lạm dụng". Muốn trần đúng
+  # thật thì phải đếm tập trung (Redis), chưa làm ở bước này.
+  replicas: 2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0 # không hạ bản sao nào xuống trước khi bản mới Ready
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vihat-miniapp
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vihat-miniapp
+    spec:
+      # 30s > 15s tắt êm của cmd/server: tiến trình ngừng nhận yêu cầu mới rồi
+      # chờ việc đang dở. Cắt ngang một lượt đăng nhập nghĩa là phiên đã ghi mà
+      # người dùng không nhận được token.
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+
+      containers:
+        - name: server
+          # KHÔNG BAO GIỜ dùng thẻ `latest`: rollback không xác định được ảnh cũ
+          # là ảnh nào, và hai pod của cùng một Deployment có thể chạy hai bản
+          # khác nhau. Ghim theo thẻ phát hành hoặc theo digest.
+          image: <dien-vao-registry>/vihat-miniapp:<dien-vao-the-anh>
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - { name: http, containerPort: 8080 }
+
+          # ===================================================================
+          #  NĂM BIẾN — mỗi dòng nói rõ giá trị đến từ Secret hay từ ConfigMap.
+          #  Bảng ánh xạ đầy đủ (bắt buộc hay không, hỏng thế nào): deploy/README.md
+          #
+          #  optional: false là dạng máy đọc được của cột "bắt buộc": kubelet từ
+          #  chối khởi động container khi khoá vắng mặt, thay vì khởi động rồi
+          #  để service tự phát hiện. Cả hai đều fail closed; cái này sớm hơn và
+          #  thông điệp chỉ thẳng vào Secret/ConfigMap còn thiếu.
+          # ===================================================================
+          env:
+            - name: DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: DATABASE_DSN
+                  optional: false
+            - name: ZALO_MINIAPP_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: ZALO_MINIAPP_SECRET_KEY
+                  optional: false
+            - name: ZALO_MINIAPP_APP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: ZALO_MINIAPP_APP_ID
+                  optional: false
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: CORS_ALLOWED_ORIGINS
+                  optional: false
+            - name: LISTEN_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: LISTEN_ADDR
+                  # TUỲ CHỌN thật sự: config có mặc định ":8080". Đây là biến
+                  # duy nhất trong năm biến được phép vắng mặt.
+                  optional: true
+
+          # ===================================================================
+          #  THĂM DÒ — /healthz CÓ CHẠM CSDL, nên nó trả 503 khi mất kết nối.
+          #  Chính vì thế ba loại probe KHÔNG dùng chung một đường dẫn.
+          #  Giải thích đầy đủ: deploy/README.md mục "Thăm dò".
+          # ===================================================================
+
+          # startupProbe: /healthz — pod chưa được coi là khởi động xong chừng
+          # nào chưa chạm được CSDL. 60 x 5s = 5 phút cho một CSDL đang lên
+          # chậm. Trong lúc probe này còn chạy, readiness/liveness bị tạm ngưng,
+          # nên một CSDL lên chậm KHÔNG bị hiểu nhầm thành pod hỏng.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 3
+
+          # readinessProbe: /healthz — mất CSDL thì pod rời khỏi Service, không
+          # nhận yêu cầu mới. Hệ quả phải biết: CSDL chết toàn cục thì MỌI bản
+          # sao cùng NotReady, Service còn 0 endpoint, và người dùng nhận lỗi
+          # của tầng ingress chứ không nhận được câu tiếng Việt của API. Đó là
+          # đánh đổi có chủ ý: một bản sao không chạm được CSDL thì không phục
+          # vụ nổi một lượt đăng nhập nào, giữ nó trong vòng phục vụ chỉ để trả
+          # 502 đẹp hơn là giữ một bản sao đã hỏng.
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # livenessProbe: TCP, CỐ Ý KHÔNG PHẢI /healthz.
+          #
+          # /healthz ở đây có nghĩa "còn nói chuyện được với CSDL". Đem nghĩa ấy
+          # làm liveness thì mất CSDL = kubelet giết tiến trình, mọi bản sao vào
+          # CrashLoopBackOff, và khi CSDL trở lại thì các pod đang nằm trong
+          # backoff nên còn lâu mới phục vụ lại. Giết một tiến trình khoẻ mạnh
+          # không sửa được một CSDL đang chết — nó chỉ kéo dài sự cố.
+          #
+          # Liveness chỉ trả lời đúng một câu: tiến trình này còn nhận kết nối
+          # không, hay đã treo hẳn. Cổng TCP trả lời đúng câu đó.
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 20
+            failureThreshold: 5
+            timeoutSeconds: 3
+
+          resources:
+            # Không đặt thì một pod sốt CPU kéo theo cả node, và scheduler
+            # không có cơ sở nào để xếp chỗ.
+            requests: { cpu: 50m, memory: 64Mi }
+            # Giới hạn bộ nhớ là chốt chặn cứng (vượt = OOMKill). Giới hạn CPU
+            # chỉ gây throttle, không giết; 500m đủ rộng cho một tuyến mỗi lượt
+            # gọi phải chờ Zalo trả lời.
+            limits: { cpu: 500m, memory: 256Mi }
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # readOnlyRootFilesystem: true nên phải có chỗ ghi tạm. Go chỉ cần
+          # /tmp (ví dụ cho tệp tạm của thư viện chuẩn); ứng dụng này không ghi
+          # tệp nào, nên 16Mi là dư.
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 16Mi }

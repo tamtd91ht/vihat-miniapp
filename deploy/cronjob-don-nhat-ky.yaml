@@ -1,0 +1,116 @@
+# vihat-miniapp — CronJob dọn nhật ký đăng nhập. MẪU.
+#
+# ĐÂY LÀ THỨ LÀM CHO CON SỐ 90 NGÀY CÓ THẬT.
+#
+# Trần "nhật ký đăng nhập được xoá chậm nhất 90 ngày" là một câu trong Chính
+# sách riêng tư — tức một cam kết, không phải một tuỳ chọn vận hành. Không có
+# lịch này thì không có gì tự dọn, nhật ký sống mãi, và câu trong văn bản pháp
+# lý trở thành câu sai. `make check` KHÔNG phát hiện được chuyện đó: không một
+# dòng mã Go nào biết cron có chạy hay không.
+#
+# HẰNG NGÀY, không phải hằng tuần. Khoảng cách giữa hai lần chạy cộng THẲNG vào
+# tuổi của dòng cũ nhất: chạy hằng tuần biến trần 90 thành 97 — vượt qua chính
+# cam kết. Xem README gốc, mục "Dọn nhật ký đăng nhập — 90 ngày".
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vihat-miniapp-don-nhat-ky
+  namespace: <dien-vao-namespace>
+  labels:
+    app.kubernetes.io/name: vihat-miniapp
+spec:
+  # 03:15 — giờ thấp điểm. Phút lẻ chứ không phải 00: mọi CronJob đặt đúng phút
+  # 0 thì cả cụm cùng thức dậy một lúc.
+  schedule: "15 3 * * *"
+
+  # timeZone cần Kubernetes >= 1.27 (GA). Cụm cũ hơn thì XOÁ dòng này — lịch
+  # khi ấy đọc theo UTC, tức 10:15 giờ Việt Nam. Vẫn HẰNG NGÀY nên trần 90 ngày
+  # không đổi; chỉ là nó chạy vào giữa ban ngày.
+  timeZone: "Asia/Ho_Chi_Minh"
+
+  # Forbid: hai lần dọn chạy chồng nhau sẽ tranh nhau DROP cùng một phân mảnh.
+  concurrencyPolicy: Forbid
+
+  # Lỡ cửa sổ (node bận, controller vừa khởi động lại) thì vẫn chạy trong vòng
+  # 1 giờ sau đó. Bỏ hẳn một ngày là cộng thẳng một ngày vào tuổi dòng cũ nhất.
+  startingDeadlineSeconds: 3600
+
+  successfulJobsHistoryLimit: 3
+  # Giữ LÂU HƠN các lần thất bại: một lần dọn hỏng là thứ không ai nhận ra cho
+  # tới khi có người đi hỏi "sao nhật ký vẫn còn dữ liệu tháng trước".
+  failedJobsHistoryLimit: 7
+
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          restartPolicy: OnFailure
+
+          securityContext:
+            runAsNonRoot: true
+            # 70 là uid của người dùng `postgres` trong ảnh postgres:*-alpine.
+            # Đổi ảnh thì phải đổi số này, nếu không pod không khởi động nổi.
+            runAsUser: 70
+            runAsGroup: 70
+            seccompProfile: { type: RuntimeDefault }
+
+          containers:
+            - name: psql
+              # Chỉ cần MÁY KHÁCH psql. Ảnh của service không có psql, và thêm
+              # psql vào ảnh phục vụ nghĩa là mọi pod đang chạy Internet-facing
+              # đều mang sẵn một công cụ nói chuyện trực tiếp với CSDL.
+              # psql 16 nối được với máy chủ 13+ (migrations/0002 cần >= 13).
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+
+              env:
+                - name: DATABASE_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: vihat-miniapp-bi-mat
+                      key: DATABASE_DSN
+                      optional: false
+                # readOnlyRootFilesystem: psql muốn ghi ~/.psql_history.
+                - name: HOME
+                  value: /tmp
+
+              # HAI VIỆC, ĐÚNG THỨ TỰ NÀY: tạo trước phân mảnh cho các tuần sắp
+              # tới, RỒI mới DROP phân mảnh quá 90 ngày. Đảo thứ tự thì có lúc
+              # dòng mới rơi vào phân mảnh mặc định.
+              #
+              # 90 là MẶC ĐỊNH CỦA HÀM nhat_ky_don_qua_han trong
+              # migrations/0002 — nguồn duy nhất của con số. Ở đây cố ý gọi
+              # KHÔNG THAM SỐ: một con số 90 viết lại ở đây là bản sao thứ hai,
+              # và bản sao thứ hai là thứ sẽ lệch.
+              #
+              # KHÔNG `set -x`, KHÔNG `echo $DATABASE_DSN`: DSN mang mật khẩu và
+              # log của Job đi vào hệ thống log tập trung.
+              # Hạn chế đã biết: `psql "$DATABASE_DSN"` đặt DSN vào argv, nhìn
+              # thấy được bằng `ps` BÊN TRONG chính pod này. Chấp nhận vì pod
+              # chỉ chạy đúng tiến trình này; xem deploy/README.md.
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
+                    -c "SELECT nhat_ky_tao_phan_manh() AS phan_manh_moi" \
+                    -c "SELECT nhat_ky_don_qua_han() AS phan_manh_da_xoa"
+
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { cpu: 500m, memory: 256Mi }
+
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
+
+          volumes:
+            - name: tmp
+              emptyDir: { sizeLimit: 16Mi }

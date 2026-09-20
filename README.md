@@ -17,8 +17,11 @@ Phạm vi bước hiện tại đúng ba việc: **định danh · phiên đăng
 
 ## TRẠNG THÁI
 
-Mã đã đủ để chạy; `make check` xanh. **Chưa từng chạy với Postgres thật và chưa từng gọi
-Zalo thật** — xem mục **NỢ** cuối tệp trước khi phát hành.
+Mã đã đủ để chạy; `make check` xanh. **Chưa từng chạy với Postgres thật.** Đã gọi Zalo
+thật đúng **một lần, bằng token GIẢ** (20/09/2026): đủ để xác nhận endpoint và hình dạng
+phản hồi, **không** đủ để xác nhận luồng đổi `phoneToken` lấy số — việc ấy cần token thật
+từ một chiếc điện thoại thật, nay chỉ còn là một thao tác 30 giây (`make thu-zalo`).
+Xem mục **NỢ** cuối tệp trước khi phát hành.
 
 | Đã xong | Nơi |
 |---|---|
@@ -32,6 +35,9 @@ Zalo thật** — xem mục **NỢ** cuối tệp trước khi phát hành.
 | Lệnh chạy tay thực hiện yêu cầu xoá dữ liệu | `cmd/an-danh` |
 | Lược đồ, nhật ký chỉ ghi thêm (cưỡng chế bằng trigger) | `migrations/0001_init.sql` |
 | Nhật ký phân mảnh theo tuần + dọn 90 ngày, bảng `nhat_ky_an_danh` | `migrations/0002_…sql` |
+| **Lệnh gọi THẬT Zalo một lần** — đường thử cho NỢ #1-3 | `cmd/thu-zalo` |
+| **Mẫu k8s + bảng ánh xạ biến, CronJob dọn nhật ký hằng ngày** | `deploy/` |
+| **Cấu hình máy local**: `.env.local`, biến shell đè tệp | `scripts/voi-env.sh` |
 
 ---
 
@@ -73,13 +79,17 @@ yêu cầu tới được máy chủ này, nên không có mã HTTP nào ở đ�
 ```
 cmd/server/          nối dây, không chứa nghiệp vụ
 cmd/an-danh/         lệnh chạy tay: thực hiện một yêu cầu xoá dữ liệu
+cmd/thu-zalo/        lệnh chạy tay: gọi THẬT graph.zalo.me một lần, in chẩn đoán
 internal/config/     NƠI DUY NHẤT đọc môi trường
 internal/secret/     kiểu Secret — chặn rò bí mật qua log
-internal/zalo/       wire.go = toàn bộ giao thức với Zalo, client.go = cách gọi
+internal/zalo/       wire.go = toàn bộ giao thức với Zalo, client.go = cách gọi,
+                     chandoan.go = đường chẩn đoán (cùng một lời gọi, không số điện thoại)
 internal/phien/      token, băm token, từ vựng kết quả đăng nhập
 internal/store/      NƠI DUY NHẤT biết SQL
 internal/httpapi/    tuyến, CORS, giới hạn theo IP
 migrations/          lược đồ, chạy bằng `make migrate`
+deploy/              mẫu Kubernetes + BẢNG ÁNH XẠ biến → khoá k8s (deploy/README.md)
+scripts/voi-env.sh   nạp .env.local cho các đích `make` chạy tay
 ```
 
 `internal/httpapi` chứ không phải `internal/http`: một gói tên `http` buộc mọi tệp trong đó
@@ -105,6 +115,48 @@ một lần, không bắt người vận hành khởi động lại năm lượt
 
 Bí mật **không vào mã nguồn, không vào tài liệu, không vào `.env.example`** — mẫu chỉ có
 placeholder. `.gitignore` chặn `.env` và `.env.*`, trừ `.env.example`.
+
+### Cấu hình: ba đường vào, một thứ tự
+
+| Ưu tiên | Đường vào | Ở đâu dùng |
+|---|---|---|
+| 1 | **Biến shell** (`DATABASE_DSN=... make migrate`) | chạy một lần với giá trị khác, không phải sửa tệp |
+| 2 | **`.env.local`** — giá trị thật của MỘT máy | máy của người phát triển / người triển khai |
+| 3 | không có gì | service **không khởi động**, log nêu **đích danh** mọi biến còn thiếu |
+
+Trên cụm **chỉ có đường 1**: giá trị đến từ Secret/ConfigMap → `env:` của pod.
+`.env.local` **không tồn tại ở đó và cũng không được cần tới**.
+
+```
+cp .env.example .env.local      # rồi điền ba giá trị thật
+chmod 600 .env.local            # tệp này chứa secret key thật và DSN có mật khẩu
+```
+
+**MỘT bản kê, không phải hai.** `.env.example` vừa là bản kê mọi biến (kèm lý do bắt
+buộc hay không) vừa là tệp để chép ra thành `.env.local`. Cố ý **không** có
+`.env.local.example`: hai tệp cùng liệt kê một danh sách là hai tệp sẽ lệch nhau, và
+khi lệch thì không ai biết tệp nào đúng. Danh sách bị khoá bằng phép kiểm —
+`internal/config/ban_ke_bien_test.go` làm `make check` đỏ khi một biến thiếu dòng
+trong `.env.example` hoặc thiếu khoá trong `deploy/*.example.yaml`.
+
+**Ai đọc `.env.local`.** Không phải nhị phân — `internal/config` chỉ đọc môi trường,
+đúng một nguồn. Việc dựng môi trường ấy trên máy local là của `scripts/voi-env.sh`,
+được các đích `make run · migrate · don-nhat-ky · an-danh · thu-zalo · test-csdl`
+gọi. Một nhị phân biết tự đọc tệp cấu hình là một nhị phân có **đường nạp thứ hai
+không ai kiểm**, và cái ngày một tệp `.env` lạc vào ảnh container là ngày nó lặng lẽ
+đè cấu hình của cụm.
+
+`make check` **cố ý không** nạp `.env.local`: một phép kiểm đổi kết quả theo máy đang
+chạy là một phép kiểm không nói được điều gì. Không đích nào in **giá trị** biến ra
+màn hình — chỉ in **tên** biến; scrollback của terminal và log của CI sống lâu hơn
+phiên làm việc.
+
+### Đưa lên Kubernetes
+
+Cùng năm biến ấy, đích đến khác: **`deploy/`** — mẫu ConfigMap/Secret/Deployment/
+Service, CronJob dọn nhật ký, và **bảng ánh xạ** biến Go → khoá k8s → Secret hay
+ConfigMap → bắt buộc hay không → hỏng thế nào khi thiếu. Nguồn duy nhất của bảng ấy:
+**`deploy/README.md`**.
 
 `cmd/an-danh` chỉ đọc `DATABASE_DSN` (qua `config.NapChiDSN`): bắt người vận hành đặt cả
 secret của Zalo để chạy một lệnh không gọi Zalo là cách nhanh nhất khiến họ điền bừa một giá
@@ -250,6 +302,71 @@ với số ấy là một tuyến xoá dữ liệu *người khác*.
 
 ---
 
+## Thử Zalo thật — `make thu-zalo`
+
+```
+make thu-zalo                  # KHÔNG gửi appsecret_proof (đúng như sản xuất)
+make thu-zalo DOI=--proof      # CÓ gửi — phải dùng CẶP TOKEN MỚI
+```
+
+Lời gọi sang Zalo đã nằm trong mã từ đầu (`internal/zalo/client.go`, gọi từ
+`internal/httpapi/sessions.go`). Thứ **chưa từng xảy ra** là một lần chạm máy chủ
+Zalo thật — vì `accessToken` và `phoneToken` do máy người dùng sinh ra **bên trong
+Zalo** và **hết hạn sau ~2 phút**: không ai ở phía máy chủ tạo được chúng. Lệnh này
+biến NỢ #1-3 từ "phải dựng một buổi thử" thành **một thao tác 30 giây cho người đang
+cầm điện thoại**.
+
+Lệnh đi qua **đúng hàm** mà đường phục vụ dùng (`Client.goi`), không phải một bản sao
+— nếu nó dựng lời gọi riêng thì một lần chạy xanh chỉ chứng minh cho bản sao ấy.
+
+### Các bước người cầm máy phải làm
+
+Hai token sống ~2 phút, nên **người cầm điện thoại và người gõ lệnh phải ngồi cạnh
+nhau hoặc đang trên cùng một cuộc gọi**. Gửi token qua chat rồi mới chạy là gần như
+chắc chắn hết hạn — và là gửi thông tin xác thực của một người dùng thật qua một kênh
+lưu lại vĩnh viễn.
+
+1. Mở **Mini App bản phát triển** trong Zalo trên điện thoại thật (bản `zmp deploy`
+   dạng thử nghiệm, hoặc quét QR từ công cụ phát triển Mini App).
+2. Bấm đúng nút đăng nhập — nút gọi `getAccessToken()` rồi `getPhoneNumber()`.
+3. **Lấy hai chuỗi ấy ra**. Hai cách, chọn một:
+   - **Màn hình gỡ lỗi tạm** trong app: in hai token ra màn hình kèm nút sao chép.
+     Chắc chắn nhất. **Gỡ bỏ trước khi phát hành** — một màn hình hiện `phoneToken`
+     là một màn hình hiện thông tin xác thực.
+   - **Bộ công cụ phát triển của Zalo**: xem `console.log` hoặc thân của yêu cầu
+     `POST /api/v1/sessions` mà app vừa gửi.
+4. Trên máy đã có `ZALO_MINIAPP_APP_ID` và `ZALO_MINIAPP_SECRET_KEY` (trong
+   `.env.local` hoặc trong shell), chạy `make thu-zalo`, dán **accessToken** rồi
+   Enter, dán **phoneToken** rồi Enter. Token nhập **qua stdin**, không qua tham số
+   dòng lệnh: tham số nằm trong `ps` và trong lịch sử shell.
+5. Chép **nguyên khối kết quả** vào mục NỢ tương ứng dưới đây.
+
+### Lệnh in ra những gì
+
+Khối đầu ra được thiết kế để **dán vào phiếu**: không số điện thoại, không token,
+không secret key — kể cả khi Zalo nhắc lại số trong `message` (chỗ ấy bị gạch).
+
+| Dòng | Để làm gì |
+|---|---|
+| thời điểm, app id, endpoint, `appsecret_proof` **BẬT/TẮT** | biết lần chạy này là lần chạy nào, ở chế độ nào |
+| **mã HTTP**, **thời gian phản hồi** | phân biệt "Zalo từ chối" với "không với tới được" |
+| **`error` và `message` NGUYÊN VĂN** của Zalo | thứ duy nhất đóng được NỢ #3 (bảng mã lỗi) |
+| **`thân JSON đọc được: có/KHÔNG`** | hình dạng wire trong `wire.go` có đúng không |
+| số điện thoại: lấy được hay không, **độ dài + hai ký tự đầu**, cả **dạng thô** lẫn **sau chuẩn hoá** | đủ biết Zalo trả `84…` hay `09…` hay `+84…` (đóng ĐIỀU CHƯA RÕ #3) — **không in cả số** (Nghị định 13) |
+| **người dùng sẽ thấy: 201 / 401 / 502** | lời gọi này thành mã nào ở tuyến thật |
+| **Kết luận** | lần chạy này đóng được mục nợ nào, và **không** đóng được mục nào |
+
+**`phoneToken` rất có thể dùng MỘT LẦN.** Muốn biết Zalo có **đòi** `appsecret_proof`
+hay không thì phải chạy **hai lượt, mỗi lượt một cặp token mới** — một lượt
+`make thu-zalo`, một lượt `make thu-zalo DOI=--proof`. Hai lượt trên cùng một cặp
+token **không so sánh được với nhau**: lượt sau sẽ hỏng vì token đã tiêu, và lỗi ấy
+trông y hệt "Zalo đòi proof". Chính lệnh cũng nhắc lại điều này ở cuối mỗi lần chạy.
+
+Test của `cmd/thu-zalo` và `internal/zalo` **không thay được** lần chạy ấy: chúng dùng
+`httptest` và chỉ chứng minh mã khớp giả định của chính nó.
+
+---
+
 ## Dữ liệu cá nhân — Nghị định 13/2023
 
 Số điện thoại là dữ liệu cá nhân. Trong kho này:
@@ -325,6 +442,7 @@ có `DROP` phân mảnh):
 
 ```
 TEST_DATABASE_DSN='<dsn>' go test ./internal/store
+make test-csdl                     # tương đương, nhưng lấy DSN từ .env.local
 ```
 
 Mười hai ca đó (mười ba, tính cả hai ca con của ranh giới 90 ngày) kiểm thứ chỉ CSDL mới trả lời được: ba lần ghi nằm trong một giao dịch (hỏng thì
@@ -343,18 +461,37 @@ Trên máy chưa có `make` (Windows): `mingw32-make check`, hoặc chạy thẳ
 
 ## NỢ — phải trả trước khi phát hành
 
+**NỢ #1-3 nay CÓ ĐƯỜNG THỬ: `make thu-zalo`** (xem mục "Thử Zalo thật"). Chúng vẫn là
+nợ — có đường thử không phải là đã thử.
+
+**Đã chạy một lần, 20/09/2026, bằng token GIẢ** (để kiểm chính đường dây của lệnh).
+Máy chủ trả lời thật, nên có ba điều **đã hết là suy đoán**: endpoint
+`GET /v2.0/me/info` có thật và trả HTTP 200 · thân đúng hình dạng JSON mà `wire.go`
+mô tả · `error=452` = access_token sai, tức lỗi phía người dùng và ánh xạ 401 hiện tại
+**đúng** cho mã ấy. Nguyên văn quan sát nằm trong `internal/zalo/wire.go` — **nguồn duy
+nhất** của bảng mã lỗi, đừng chép sang đây.
+**Không** chứng minh được gì về: tên hai header `code`/`secret_key`, trường
+`data.number`, và `appsecret_proof` — lời gọi dừng ở access_token sai trước khi chạm
+tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
+
 1. **Thử bộ đổi token Zalo trên máy thật.** Toàn bộ hình dạng giao thức nằm trong
    `internal/zalo/wire.go` ở **mức chứng cứ TRUNG BÌNH**: gom từ nhiều nguồn **thứ cấp** nhất
    quán, vì trang tài liệu chính thức render bằng JS nên không đọc được nguyên văn (20/09/2026).
    **Chưa một dòng nào chạm máy chủ Zalo.** Test trong gói đó dùng `httptest` và chỉ chứng
    minh *mã khớp với giả định của chính nó* — nó không chứng minh giả định đúng.
+   → Chạy `make thu-zalo` một lần với token thật, rồi chép khối kết quả vào đây và **sửa mức
+   chứng cứ trong `wire.go`**.
 2. **`appsecret_proof`.** Từ 01/01/2024 Zalo yêu cầu tham số này khi lấy thông tin người dùng
    từ máy chủ. Chưa rõ có áp cho luồng Mini App này không, gửi bằng header hay query, và ký
    trên chuỗi nào. Hiện **tắt mặc định**, có sẵn công tắc `Client.GuiAppSecretProof` để lật
    khi thử trên máy thật.
+   → `make thu-zalo` (tắt) và `make thu-zalo DOI=--proof` (bật), **mỗi lượt một cặp token
+   mới**. Lượt tắt mà thành công là Zalo **không đòi** proof.
 3. **Bảng mã lỗi của Zalo.** Hiện mọi `error != 0` đều coi là token hỏng → 401. Nếu có mã
    nghĩa là "secret key sai" thì đó là lỗi **phía ta**, phải tách thành 502 + cảnh báo vận
    hành, chứ không được bảo người dùng đăng nhập lại.
+   → `make thu-zalo` in `error` và `message` **nguyên văn**: mỗi mã gặp được thì ghi một dòng
+   vào đây, kèm việc nó là lỗi phía người dùng hay phía ta.
 4. **Xác nhận origin CORS thật** bằng DevTools trên thiết bị.
 5. **Proxy tin cậy** cho bộ giới hạn theo IP, trước khi đặt sau load balancer.
 6. **Bổ sung Chính sách riêng tư của app.** IP, thời điểm đăng nhập và kết quả từng lượt
@@ -362,9 +499,13 @@ Trên máy chưa có `make` (Windows): `mingw32-make check`, hoặc chạy thẳ
    "Máy chủ thực sự lưu những gì". Văn bản ấy đi kèm hồ sơ duyệt Zalo, khai thiếu là vi phạm
    chính Nghị định 13.
 7. ~~Thời hạn lưu nhật ký~~ — **ĐÃ CHỐT: chậm nhất 90 ngày** (thực tế 83–90), cưỡng chế bằng
-   `make don-nhat-ky`. Việc còn lại là **cắm nó vào cron HẰNG NGÀY** của môi trường thật:
-   chạy thưa hơn thì khoảng cách giữa hai lần chạy cộng thẳng vào trần, và không chạy thì
-   không có gì tự dọn. `make check` không phát hiện được chuyện này.
+   `make don-nhat-ky`. ~~Việc còn lại là cắm nó vào cron HẰNG NGÀY~~ — **ĐÃ CÓ:
+   `deploy/cronjob-don-nhat-ky.yaml`**, chạy `15 3 * * *` **hằng ngày**, `concurrencyPolicy:
+   Forbid`, chạy bù trong một giờ nếu lỡ cửa sổ.
+   Việc **còn lại thật sự**: (a) áp dụng nó lên cụm, và (b) **một cảnh báo khi nó ngừng
+   chạy** — CronJob bị xoá, bị `suspend`, hoặc Job hỏng nhiều ngày liền thì nhật ký âm thầm
+   sống quá 90 ngày, và triệu chứng đầu tiên là một câu hỏi từ phía kiểm tra. `make check`
+   không thấy được chuyện này và manifest cũng không. Xem `deploy/README.md`, mục CronJob.
 8. **Chạy thử CẢ HAI migration trên một Postgres thật.** Máy dựng kho không có `psql` và
    không có Docker đang chạy, nên lược đồ **chưa từng được áp dụng lần nào** — cú pháp mới
    chỉ được đọc bằng mắt, và **mười hai ca test chạm CSDL trong `internal/store` chưa từng

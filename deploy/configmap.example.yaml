@@ -1,0 +1,36 @@
+# vihat-miniapp — ConfigMap MẪU (ba biến KHÔNG bí mật).
+#
+# TỆP NÀY CHỈ CHỨA PLACEHOLDER. Không điền giá trị thật rồi commit: tệp mẫu nằm
+# trong git, và một tệp mẫu từng mang giá trị thật thì giá trị ấy ở lại trong
+# lịch sử của mọi bản clone.
+#
+# Cách dùng: chép ra ngoài kho, điền, rồi `kubectl apply -f` — hoặc tạo thẳng
+# bằng `kubectl create configmap` (xem deploy/README.md).
+#
+# KHOÁ VIẾT GẠCH_DƯỚI, trùng khít tên biến môi trường mà Go đọc. Lý do nằm ở
+# deploy/README.md mục "Vì sao env: tường minh" — đọc trước khi đổi sang dạng
+# GẠCH-NGANG.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vihat-miniapp-cau-hinh
+  namespace: <dien-vao-namespace>
+  labels:
+    app.kubernetes.io/name: vihat-miniapp
+data:
+  # Định danh Mini App mà secret key thuộc về. KHÔNG phải bí mật — service in nó
+  # ra log lúc khởi động để vận hành biết tiến trình đang phục vụ Mini App nào.
+  ZALO_MINIAPP_APP_ID: "<dien-vao-app-id-mini-app>"
+
+  # Danh sách origin được phép gọi, ngăn cách bằng dấu phẩy. KHÔNG BAO GIỜ "*"
+  # (config từ chối "*" ngay lúc nạp và service không khởi động).
+  # Chọn origin nào và vì sao: README gốc, mục "CORS" — NGUỒN DUY NHẤT của danh
+  # sách ấy. Đừng chép danh sách vào đây, hai bản sao sẽ lệch nhau.
+  CORS_ALLOWED_ORIGINS: "<dien-vao-danh-sach-origin-cach-nhau-dau-phay>"
+
+  # NGOẠI LỆ DUY NHẤT của kỷ luật placeholder trong tệp này, và nói rõ vì sao:
+  # đây không phải giá trị ai đó phải đi tra, nó bị ghim bởi containerPort trong
+  # deploy/deployment.yaml. Đổi một bên mà quên bên kia thì probe gõ vào cổng
+  # không có ai nghe, pod không bao giờ Ready, và triệu chứng trông như "service
+  # chết" chứ không như "sai cổng".
+  LISTEN_ADDR: ":8080"

@@ -1,7 +1,27 @@
 # Bí mật: không bao giờ vào git. Chỉ .env.example (toàn placeholder) được theo dõi.
+# `.env.*` đã bao gồm .env.local và .env.<gì-đó>.local — không cần thêm dòng cho
+# từng biến thể, và thêm dòng thừa chỉ làm người đọc tưởng dòng nào thiếu là an toàn.
 .env
 .env.*
 !.env.example
+
+# Kubernetes: chỉ tệp *.example.yaml (toàn placeholder) được theo dõi. Mọi tệp
+# secret/configmap ĐÃ ĐIỀN đều bị chặn, kể cả trong thư mục con của deploy/.
+# Cách an toàn hơn hẳn là đừng tạo tệp đã điền: dùng `kubectl create secret
+# generic --from-file` (xem deploy/README.md).
+deploy/**/*secret*.yaml
+deploy/**/*secret*.yml
+deploy/**/*bi-mat*.yaml
+deploy/**/*configmap*.yaml
+deploy/**/*configmap*.yml
+deploy/**/*cau-hinh*.yaml
+!deploy/**/*.example.yaml
+!deploy/**/*.example.yml
+
+# Thông tin đăng nhập cụm — không phải của kho này, nhưng người ta hay để tạm
+# vào thư mục đang làm việc.
+kubeconfig
+*.kubeconfig
 
 # Nhị phân build
 /bin/

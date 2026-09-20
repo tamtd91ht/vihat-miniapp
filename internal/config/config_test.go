@@ -96,3 +96,31 @@ func TestTTLPhien_LaChinhSach7Ngay(t *testing.T) {
 		t.Fatalf("TTLPhien = %s, chính sách đã chốt là 7 ngày — đổi phải hỏi chủ sản phẩm", TTLPhien)
 	}
 }
+
+// NapChiZalo: lệnh chẩn đoán chỉ cần app id + secret, và KHÔNG được đòi DSN —
+// đòi thừa là mời người vận hành gõ một DSN giả cho xong.
+func TestNapChiZalo_KhongDoiDSN(t *testing.T) {
+	cz, err := NapChiZalo(tra(map[string]string{
+		EnvZaloAppID:     "1234567890",
+		EnvZaloSecretKey: "gia-lap-secret-trong-test",
+	}))
+	if err != nil {
+		t.Fatalf("mong không lỗi khi vắng DATABASE_DSN, nhận: %s", err)
+	}
+	if cz.AppID != "1234567890" || cz.SecretKey.Lo() != "gia-lap-secret-trong-test" {
+		t.Errorf("cấu hình Zalo nạp sai: app id = %q", cz.AppID)
+	}
+}
+
+func TestNapChiZalo_ThieuThiNeuDichDanhVaKhongInGiaTri(t *testing.T) {
+	_, err := NapChiZalo(tra(map[string]string{EnvZaloSecretKey: "gia-lap-secret-trong-test"}))
+	if err == nil || !errors.Is(err, ErrThieuBien) {
+		t.Fatalf("thiếu app id mà vẫn nạp được: %v", err)
+	}
+	if !strings.Contains(err.Error(), EnvZaloAppID) {
+		t.Errorf("lỗi phải nêu đích danh %s: %s", EnvZaloAppID, err)
+	}
+	if strings.Contains(err.Error(), "gia-lap-secret-trong-test") {
+		t.Error("thông điệp lỗi chứa GIÁ TRỊ biến — chỉ được chứa tên biến")
+	}
+}

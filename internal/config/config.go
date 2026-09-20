@@ -122,6 +122,45 @@ func NapChiDSN(look func(string) (string, bool)) (string, error) {
 // NapChiDSNTuMoiTruong là lối vào dùng trong sản xuất.
 func NapChiDSNTuMoiTruong() (string, error) { return NapChiDSN(os.LookupEnv) }
 
+// CauHinhZalo là phần cấu hình đủ để gọi Zalo, không hơn.
+type CauHinhZalo struct {
+	AppID     string // không phải bí mật — được phép in ra
+	SecretKey secret.Secret
+}
+
+// NapChiZalo cho lệnh chẩn đoán chạy tay (cmd/thu-zalo) — nó gọi Zalo và
+// KHÔNG chạm CSDL.
+//
+// Cùng một lý do như NapChiDSN, lật ngược: bắt người chạy đặt DATABASE_DSN và
+// CORS_ALLOWED_ORIGINS chỉ để thử một lời gọi sang Zalo là cách nhanh nhất
+// khiến họ gõ bừa một DSN giả — và một DSN giả trong shell của người vận hành
+// rồi sẽ được dán vào chỗ khác.
+//
+// Vẫn đi qua gói này: config là NƠI DUY NHẤT đọc môi trường.
+func NapChiZalo(look func(string) (string, bool)) (CauHinhZalo, error) {
+	var thieu []string
+	lay := func(ten string) string {
+		v, ok := look(ten)
+		if v = strings.TrimSpace(v); !ok || v == "" {
+			thieu = append(thieu, ten)
+			return ""
+		}
+		return v
+	}
+
+	cz := CauHinhZalo{AppID: lay(EnvZaloAppID)}
+	cz.SecretKey = secret.Secret(lay(EnvZaloSecretKey))
+
+	if len(thieu) > 0 {
+		// Nêu đích danh cả hai trong một lần, như Nap — và KHÔNG in giá trị nào.
+		return CauHinhZalo{}, fmt.Errorf("thiếu biến bắt buộc: %s: %w", strings.Join(thieu, ", "), ErrThieuBien)
+	}
+	return cz, nil
+}
+
+// NapChiZaloTuMoiTruong là lối vào dùng trong sản xuất.
+func NapChiZaloTuMoiTruong() (CauHinhZalo, error) { return NapChiZalo(os.LookupEnv) }
+
 // phanTichOrigins tách danh sách origin và từ chối "*".
 //
 // "*" bị cấm chứ không chỉ bị khuyên tránh: tuyến đăng nhập nhận token của Zalo,

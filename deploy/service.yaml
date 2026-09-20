@@ -1,0 +1,23 @@
+# vihat-miniapp — Service MẪU.
+#
+# ClusterIP: tuyến này KHÔNG được phơi thẳng ra Internet. Đường vào từ ngoài đi
+# qua Ingress/gateway của cụm, nơi có TLS và nơi khai báo được proxy tin cậy —
+# xem deploy/README.md mục "Những gì thư mục này KHÔNG có".
+apiVersion: v1
+kind: Service
+metadata:
+  name: vihat-miniapp
+  namespace: <dien-vao-namespace>
+  labels:
+    app.kubernetes.io/name: vihat-miniapp
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: vihat-miniapp
+  ports:
+    - name: http
+      port: 80
+      # Trỏ tới TÊN cổng, không tới số: đổi cổng trong Deployment thì Service
+      # theo được mà không cần sửa hai chỗ và không cần nhớ đã sửa hay chưa.
+      targetPort: http
+      protocol: TCP

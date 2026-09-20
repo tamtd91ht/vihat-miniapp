@@ -79,13 +79,50 @@ func New(baseURL string, secretKey secret.Secret, tuyChon ...TuyChon) *Client {
 // chứa số điện thoại, và một lỗi có body là một lỗi đưa dữ liệu cá nhân vào log
 // tập trung — đúng thứ Nghị định 13/2023 cấm.
 func (c *Client) LaySoDienThoai(ctx context.Context, accessToken, phoneToken string) (string, error) {
+	kq := c.goi(ctx, accessToken, phoneToken)
+	if kq.Loi != nil {
+		return "", kq.Loi
+	}
+	return kq.SoChuan, nil
+}
+
+// ketQuaGoi là toàn bộ thứ quan sát được từ MỘT lời gọi sang Zalo.
+//
+// KHÔNG XUẤT RA NGOÀI GÓI: nó mang SoTho/SoChuan, tức dữ liệu cá nhân. Đường
+// phục vụ lấy SoChuan qua LaySoDienThoai; đường chẩn đoán lấy HÌNH DẠNG của số
+// qua ChanDoan. Không có đường thứ ba.
+type ketQuaGoi struct {
+	GuiProof   bool
+	HTTPStatus int
+	ThoiGian   time.Duration
+
+	CoThanJSON  bool
+	ZaloError   int
+	ZaloMessage string
+
+	SoTho   string // nguyên văn Zalo trả
+	SoChuan string // sau ChuanHoaSo; rỗng khi không lấy được
+
+	Loi error // đã phân loại: ErrTokenKhongHopLe / ErrKhongVoiToiZalo / nil
+}
+
+// goi là ĐƯỜNG DUY NHẤT chạm máy chủ Zalo trong kho này.
+//
+// Một đường, hai người dùng (LaySoDienThoai và ChanDoan) là điều kiện để một
+// lần chạy thật của cmd/thu-zalo nói được điều gì đó về đường phục vụ. Hai bản
+// sao của cùng lời gọi thì lần thử thật chỉ chứng minh cho chính bản sao ấy.
+func (c *Client) goi(ctx context.Context, accessToken, phoneToken string) ketQuaGoi {
+	kq := ketQuaGoi{GuiProof: c.GuiAppSecretProof}
+
 	if accessToken == "" || phoneToken == "" {
-		return "", fmt.Errorf("thiếu accessToken hoặc phoneToken: %w", ErrTokenKhongHopLe)
+		kq.Loi = fmt.Errorf("thiếu accessToken hoặc phoneToken: %w", ErrTokenKhongHopLe)
+		return kq
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+DuongDanLayThongTin, nil)
 	if err != nil {
-		return "", fmt.Errorf("dựng yêu cầu: %w", ErrKhongVoiToiZalo)
+		kq.Loi = fmt.Errorf("dựng yêu cầu: %w", ErrKhongVoiToiZalo)
+		return kq
 	}
 	req.Header.Set(HeaderAccessToken, accessToken)
 	req.Header.Set(HeaderCode, phoneToken)
@@ -94,41 +131,54 @@ func (c *Client) LaySoDienThoai(ctx context.Context, accessToken, phoneToken str
 		req.Header.Set(HeaderAppSecretProof, TinhAppSecretProof(accessToken, c.secretKey))
 	}
 
+	batDau := time.Now()
 	resp, err := c.hc.Do(req)
+	kq.ThoiGian = time.Since(batDau)
 	if err != nil {
 		// err có thể chứa URL nhưng không chứa header — không có dữ liệu cá nhân
 		// trong URL này (đó là lý do token đi bằng header, không bằng query).
-		return "", fmt.Errorf("gọi Zalo: %w", ErrKhongVoiToiZalo)
+		kq.Loi = fmt.Errorf("gọi Zalo: %w", ErrKhongVoiToiZalo)
+		return kq
 	}
 	defer func() { _ = resp.Body.Close() }()
+	kq.HTTPStatus = resp.StatusCode
 
 	if resp.StatusCode != http.StatusOK {
 		// 4xx ở tầng HTTP vẫn là "ta gọi sai / Zalo từ chối", không phải lỗi người
 		// dùng phải sửa -> 502. Chỉ error!=0 trong body mới là token hỏng.
-		return "", fmt.Errorf("Zalo trả HTTP %d: %w", resp.StatusCode, ErrKhongVoiToiZalo)
+		kq.Loi = fmt.Errorf("Zalo trả HTTP %d: %w", resp.StatusCode, ErrKhongVoiToiZalo)
+		return kq
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, gioiHanBody))
 	if err != nil {
-		return "", fmt.Errorf("đọc phản hồi: %w", ErrKhongVoiToiZalo)
+		kq.Loi = fmt.Errorf("đọc phản hồi: %w", ErrKhongVoiToiZalo)
+		return kq
 	}
 
 	var ph phanHoiLayThongTin
 	if err := json.Unmarshal(body, &ph); err != nil {
 		// Cố tình KHÔNG kèm body vào lỗi.
-		return "", fmt.Errorf("phản hồi không phải JSON như mong đợi: %w", ErrKhongVoiToiZalo)
+		kq.Loi = fmt.Errorf("phản hồi không phải JSON như mong đợi: %w", ErrKhongVoiToiZalo)
+		return kq
 	}
+	kq.CoThanJSON = true
+	kq.ZaloError, kq.ZaloMessage, kq.SoTho = ph.Error, ph.Message, ph.Data.Number
+
 	if ph.Error != 0 {
 		// Chỉ ghi MÃ lỗi (số), không ghi message của Zalo — message là chuỗi ta
 		// không kiểm soát và có thể mang theo dữ liệu người dùng.
-		return "", fmt.Errorf("Zalo báo lỗi mã %d: %w", ph.Error, ErrTokenKhongHopLe)
+		kq.Loi = fmt.Errorf("Zalo báo lỗi mã %d: %w", ph.Error, ErrTokenKhongHopLe)
+		return kq
 	}
 
 	so, err := ChuanHoaSo(ph.Data.Number)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrKhongVoiToiZalo, err)
+		kq.Loi = fmt.Errorf("%w: %w", ErrKhongVoiToiZalo, err)
+		return kq
 	}
-	return so, nil
+	kq.SoChuan = so
+	return kq
 }
 
 // TinhAppSecretProof = hex(HMAC-SHA256(access_token, secret_key)).

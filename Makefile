@@ -5,8 +5,26 @@
 
 GO ?= go
 
-.PHONY: check fmt vet test build run tidy migrate don-nhat-ky an-danh
+## VOI_ENV — nạp .env.local rồi mới chạy lệnh. Xem scripts/voi-env.sh.
+##
+## BIẾN SHELL ĐÈ TỆP, nên `DATABASE_DSN=... make migrate` vẫn chạy được một lần
+## với DSN khác mà không phải sửa tệp. Trên cụm thì tệp KHÔNG tồn tại và cũng
+## không được cần tới: ở đó giá trị đến từ Secret/ConfigMap.
+##
+## KHÔNG đích nào dưới đây in GIÁ TRỊ biến ra màn hình — .env.local chứa secret
+## key thật và DSN có mật khẩu, mà scrollback của terminal và log của CI thì
+## sống lâu hơn phiên làm việc.
+## Gọi qua `sh` chứ không gọi thẳng `./scripts/voi-env.sh`: kho này được dựng
+## trên Windows, nơi git đặt core.filemode=false, nên bit thực thi KHÔNG được
+## ghi vào git — trên Linux tệp sẽ về 100644 và lời gọi thẳng chết vì
+## "Permission denied", ở đúng cái máy không ai ngồi trước màn hình.
+VOI_ENV = sh ./scripts/voi-env.sh
 
+.PHONY: check fmt vet test test-csdl build run tidy migrate don-nhat-ky an-danh thu-zalo
+
+## check CỐ Ý KHÔNG nạp .env.local: một phép kiểm đổi kết quả theo máy đang chạy
+## là một phép kiểm không nói được điều gì. Test chạm CSDL tự SKIP khi thiếu
+## TEST_DATABASE_DSN — muốn chạy chúng thì gọi `make test-csdl`.
 check: fmt vet test
 
 ## fmt — CHỈ BÁO, KHÔNG sửa tại chỗ. `go fmt` thì ghi đè tệp, và một đích kiểm
@@ -30,11 +48,18 @@ test:
 	@echo ">> go test"
 	@$(GO) test -race -count=1 ./...
 
+## test-csdl — chạy RIÊNG các ca chạm CSDL (NỢ #8). Cần TEST_DATABASE_DSN trỏ
+## tới một CSDL DÙNG RIÊNG CHO TEST đã chạy cả hai migration: các ca này DROP
+## phân mảnh.
+test-csdl:
+	@$(VOI_ENV) sh -c 'test -n "$$TEST_DATABASE_DSN" || { echo "missing TEST_DATABASE_DSN"; exit 1; }; \
+		$(GO) test -race -count=1 ./internal/store'
+
 build:
 	@$(GO) build -o bin/server ./cmd/server
 
 run:
-	@$(GO) run ./cmd/server
+	@$(VOI_ENV) $(GO) run ./cmd/server
 
 tidy:
 	@$(GO) mod tidy
@@ -42,9 +67,9 @@ tidy:
 ## migrate — chạy lược đồ theo thứ tự. Cần psql và biến DATABASE_DSN.
 ## ON_ERROR_STOP=1: hỏng ở câu nào thì dừng ngay, không chạy tiếp nửa lược đồ.
 migrate:
-	@test -n "$$DATABASE_DSN" || { echo "missing DATABASE_DSN"; exit 1; }
-	psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0001_init.sql
-	psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0002_nhat_ky_90_ngay_va_an_danh.sql
+	@$(VOI_ENV) sh -c 'test -n "$$DATABASE_DSN" || { echo "missing DATABASE_DSN"; exit 1; }; \
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0001_init.sql && \
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0002_nhat_ky_90_ngay_va_an_danh.sql'
 
 ## don-nhat-ky — CHẠY HẰNG NGÀY trong cron. KHÔNG phải "hằng tuần cũng được":
 ## khoảng cách giữa hai lần chạy cộng thẳng vào tuổi của dòng cũ nhất, nên chạy
@@ -57,13 +82,30 @@ migrate:
 ##
 ## 90 ngày là mặc định của hàm nhat_ky_don_qua_han trong migrations/0002 —
 ## NGUỒN DUY NHẤT của con số. Ở đây cố ý gọi không tham số.
+##
+## TRÊN CỤM thì đích này KHÔNG phải là thứ chạy: xem
+## deploy/cronjob-don-nhat-ky.yaml — cùng hai câu lệnh, chạy hằng ngày, không
+## phụ thuộc vào việc có ai nhớ gõ lệnh hay không.
 don-nhat-ky:
-	@test -n "$$DATABASE_DSN" || { echo "missing DATABASE_DSN"; exit 1; }
-	psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 \
-		-c "SELECT nhat_ky_tao_phan_manh() AS phan_manh_moi" \
-		-c "SELECT nhat_ky_don_qua_han() AS phan_manh_da_xoa"
+	@$(VOI_ENV) sh -c 'test -n "$$DATABASE_DSN" || { echo "missing DATABASE_DSN"; exit 1; }; \
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 \
+			-c "SELECT nhat_ky_tao_phan_manh() AS phan_manh_moi" \
+			-c "SELECT nhat_ky_don_qua_han() AS phan_manh_da_xoa"'
 
 ## an-danh — thực hiện MỘT yêu cầu xoá dữ liệu (Nghị định 13). Chạy tay, có
 ## người ký. Số điện thoại nhập qua stdin, không qua tham số dòng lệnh.
 an-danh:
-	@$(GO) run ./cmd/an-danh
+	@$(VOI_ENV) $(GO) run ./cmd/an-danh
+
+## thu-zalo — gọi THẬT graph.zalo.me một lần (NỢ #1-3). Chạy tay, cần người
+## đang cầm điện thoại: hai token sống ~2 phút và nhập qua STDIN, không qua
+## tham số dòng lệnh. Các bước lấy token: README, mục "Thử Zalo thật".
+##
+##   make thu-zalo                 # không gửi appsecret_proof (như sản xuất)
+##   make thu-zalo DOI=--proof     # có gửi — phải dùng CẶP TOKEN MỚI
+##
+## DOI để trống chứ không mặc định --khong-proof: hai cách viết cùng một nghĩa
+## thì bản in ra của lệnh phải nói rõ nó đang ở chế độ nào, và nó có nói.
+DOI ?=
+thu-zalo:
+	@$(VOI_ENV) $(GO) run ./cmd/thu-zalo $(DOI)
