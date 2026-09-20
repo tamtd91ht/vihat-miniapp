@@ -1,0 +1,16 @@
+# Bí mật: không bao giờ vào git. Chỉ .env.example (toàn placeholder) được theo dõi.
+.env
+.env.*
+!.env.example
+
+# Nhị phân build
+/bin/
+/vihat-miniapp
+/vihat-miniapp.exe
+
+# Rác của công cụ
+*.test
+*.out
+.DS_Store
+.idea/
+.vscode/
