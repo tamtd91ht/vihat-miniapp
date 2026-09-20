@@ -104,6 +104,24 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 // NapTuMoiTruong là lối vào dùng trong sản xuất.
 func NapTuMoiTruong() (Config, error) { return Nap(os.LookupEnv) }
 
+// NapChiDSN cho các lệnh vận hành chạy tay (cmd/an-danh) — chúng chỉ cần CSDL.
+//
+// Vì sao không dùng Nap: bắt người vận hành đặt cả ZALO_MINIAPP_SECRET_KEY chỉ
+// để chạy một lệnh không hề gọi Zalo là cách nhanh nhất khiến họ điền bừa một
+// giá trị giả, và giá trị giả ấy rồi sẽ theo ai đó sang môi trường thật.
+//
+// Vẫn đi qua gói này: config là NƠI DUY NHẤT đọc môi trường.
+func NapChiDSN(look func(string) (string, bool)) (string, error) {
+	v, ok := look(EnvDatabaseDSN)
+	if v = strings.TrimSpace(v); !ok || v == "" {
+		return "", fmt.Errorf("thiếu biến bắt buộc: %s: %w", EnvDatabaseDSN, ErrThieuBien)
+	}
+	return v, nil
+}
+
+// NapChiDSNTuMoiTruong là lối vào dùng trong sản xuất.
+func NapChiDSNTuMoiTruong() (string, error) { return NapChiDSN(os.LookupEnv) }
+
 // phanTichOrigins tách danh sách origin và từ chối "*".
 //
 // "*" bị cấm chứ không chỉ bị khuyên tránh: tuyến đăng nhập nhận token của Zalo,

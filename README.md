@@ -26,10 +26,12 @@ Zalo thật** — xem mục **NỢ** cuối tệp trước khi phát hành.
 | Kiểu `Secret` chặn mọi đường in ra | `internal/secret` |
 | Bộ đổi token Zalo + chuẩn hoá số + phân loại lỗi | `internal/zalo` |
 | Sinh bearer token và băm SHA-256 | `internal/phien` |
-| Ba bảng, một giao dịch ghi cả ba | `internal/store` |
+| Ba bảng, một giao dịch ghi cả ba; ẩn danh hoá cũng một giao dịch | `internal/store` |
 | Hai tuyến, CORS, giới hạn theo IP | `internal/httpapi` |
 | Lắp ráp, tắt êm, thiếu biến thì không khởi động | `cmd/server` |
-| Lược đồ ba bảng, nhật ký chỉ ghi thêm (cưỡng chế bằng trigger) | `migrations/0001_init.sql` |
+| Lệnh chạy tay thực hiện yêu cầu xoá dữ liệu | `cmd/an-danh` |
+| Lược đồ, nhật ký chỉ ghi thêm (cưỡng chế bằng trigger) | `migrations/0001_init.sql` |
+| Nhật ký phân mảnh theo tuần + dọn 90 ngày, bảng `nhat_ky_an_danh` | `migrations/0002_…sql` |
 
 ---
 
@@ -70,6 +72,7 @@ yêu cầu tới được máy chủ này, nên không có mã HTTP nào ở đ�
 
 ```
 cmd/server/          nối dây, không chứa nghiệp vụ
+cmd/an-danh/         lệnh chạy tay: thực hiện một yêu cầu xoá dữ liệu
 internal/config/     NƠI DUY NHẤT đọc môi trường
 internal/secret/     kiểu Secret — chặn rò bí mật qua log
 internal/zalo/       wire.go = toàn bộ giao thức với Zalo, client.go = cách gọi
@@ -103,8 +106,20 @@ một lần, không bắt người vận hành khởi động lại năm lượt
 Bí mật **không vào mã nguồn, không vào tài liệu, không vào `.env.example`** — mẫu chỉ có
 placeholder. `.gitignore` chặn `.env` và `.env.*`, trừ `.env.example`.
 
-`config.TTLPhien = 7 ngày` là **chính sách sản phẩm** (chủ sản phẩm chốt 20/09/2026), cố ý
-để trong mã có người review chứ không để ngoài môi trường cho ai sửa cũng được.
+`cmd/an-danh` chỉ đọc `DATABASE_DSN` (qua `config.NapChiDSN`): bắt người vận hành đặt cả
+secret của Zalo để chạy một lệnh không gọi Zalo là cách nhanh nhất khiến họ điền bừa một giá
+trị giả.
+
+### Ba con số là CHÍNH SÁCH, không phải tham số
+
+Chủ sản phẩm chốt cả ba ngày 20/09/2026. Chúng cố ý nằm trong mã/lược đồ có người review,
+không nằm ngoài môi trường cho ai sửa cũng được.
+
+| Con số | Nguồn duy nhất | Nghĩa |
+|---|---|---|
+| **TTL phiên 7 ngày** | `config.TTLPhien` | phiên đăng nhập hết hạn sau 7 ngày |
+| **Nhật ký đăng nhập 90 ngày** (trần: mỗi dòng sống tối đa 90, tối thiểu 83) | mặc định của hàm `nhat_ky_don_qua_han` trong `migrations/0002_…sql` | `make don-nhat-ky` gọi không tham số, chạy **hằng ngày** |
+| **Số điện thoại: giữ tới khi người dùng yêu cầu xoá** | không có hạn tự động trong mã | xoá = ẩn danh hoá, xem `make an-danh` |
 
 ---
 
@@ -160,7 +175,8 @@ make migrate        # cần DATABASE_DSN trong môi trường và có psql
 |---|---|
 | `nguoi_dung` | `id` uuid PK · `so_dien_thoai` text UNIQUE (đã chuẩn hoá `84xxxxxxxxx`) · `tao_luc` · `cap_nhat_luc` |
 | `phien` | `id` uuid PK · `nguoi_dung_id` → `nguoi_dung` · `token_bam` bytea UNIQUE (32 byte) · `tao_luc` · `het_han_luc` · `thu_hoi_luc` |
-| `nhat_ky_dang_nhap` | `id` bigint identity PK · `nguoi_dung_id` (NULL khi thất bại) · `phien_id` · `ket_qua` · `ly_do` (mã ngắn) · `dia_chi_ip` inet · `tao_luc` |
+| `nhat_ky_dang_nhap` | `id` bigint identity · `nguoi_dung_id` (NULL khi thất bại) · `phien_id` · `ket_qua` · `ly_do` (mã ngắn) · `dia_chi_ip` inet · `tao_luc` · PK `(id, tao_luc)`, **phân mảnh theo tuần** |
+| `nhat_ky_an_danh` (0002) | `id` bigint identity PK · `nguoi_dung_id` → `nguoi_dung` · `nguon_yeu_cau` (`hotline`/`email`) · `nguoi_thuc_hien` · `ghi_chu` · `tao_luc` |
 
 Ba điều không thương lượng trong lược đồ:
 
@@ -173,6 +189,64 @@ Ba điều không thương lượng trong lược đồ:
 
 Một lần đăng nhập thành công ghi người dùng + phiên + nhật ký trong **một giao dịch**. Không
 có nhánh "ghi nhật ký sau nếu được".
+
+### Dọn nhật ký đăng nhập — 90 ngày
+
+```
+make don-nhat-ky        # CRON HẰNG NGÀY — không được thưa hơn, xem bên dưới
+```
+
+Một lệnh, hai việc: tạo trước phân mảnh cho các tuần sắp tới, rồi **DROP** các phân mảnh đã
+quá 90 ngày.
+
+**Mỗi dòng sống tối đa 90 ngày, tối thiểu 83** — dọn theo lô tuần thì không thể đúng 90 cho
+mọi dòng, và phần lệch được chọn đi về phía **xoá sớm**.
+
+**Vì sao DROP phân mảnh chứ không DELETE.** Dọn 90 ngày là DELETE, mà DELETE trên nhật ký bị
+trigger từ chối — đúng như thiết kế. Đường còn lại là cho trigger một cờ để nó nhận ra "lần
+dọn định kỳ": nhanh hơn, nhưng đó là **một cánh cửa mở sẵn trong đúng cơ chế làm nhật ký có
+giá trị chứng cứ**, và từ hôm ấy không gì phân biệt được lần dọn định kỳ với một lần xoá dấu
+vết. DROP là DDL, không đi qua trigger mức dòng, nên tính chỉ-ghi-thêm **không bị khoét lỗ**:
+vẫn không ai sửa hay xoá được một dòng nào.
+
+Cái giá, nói trước:
+
+- **Biên độ 83–90 ngày, không phải đúng 90.** Điều kiện là `d <= hôm_nay − 90`: DROP khi
+  **đầu** phân mảnh đã quá hạn. Viết thành `d + 7 <=` (**đuôi** quá hạn) nghe an toàn hơn —
+  "không xoá sớm dòng nào" — nhưng nó đẩy dòng cũ nhất lên **97 ngày**, tức hệ thống vượt qua
+  chính cái trần in trong văn bản pháp lý; lệch bảy ngày về phía giữ lâu hơn là thứ không
+  được để lọt. Hai ca test khoá cả hai phía ranh giới (90 ngày → phải dọn · 89 ngày → không
+  đụng). Chia theo tháng thì biên độ thành 60–90 ngày (mất tới một tháng dữ liệu truy lạm
+  dụng); chia theo ngày thì sát nhất nhưng lỡ một ngày là hỏng.
+  → Câu đúng cho văn bản pháp lý: **"nhật ký đăng nhập được xoá chậm nhất 90 ngày kể từ khi
+  ghi"**. Đừng viết "đúng 90 ngày", cũng đừng viết "không quá 90 ngày, dọn theo lô hằng
+  tuần" — câu sau là câu cũ và nó sai.
+- **Chạy hằng ngày, không phải hằng tuần.** Khoảng cách giữa hai lần chạy cộng thẳng vào tuổi
+  của dòng cũ nhất: cron hằng tuần biến trần 90 thành 97, đúng cái vừa sửa.
+- **Bỏ bẵng `make don-nhat-ky`** thì dòng mới rơi vào phân mảnh mặc định: không mất dữ liệu,
+  nhưng phải dọn tay trước khi tạo lại được phân mảnh của tuần đó. Hàm dọn **cảnh báo** khi
+  phân mảnh mặc định có dòng.
+- Khoá chính đổi từ `(id)` thành `(id, tao_luc)` — Postgres đòi khoá chính chứa khoá phân
+  mảnh. Không bảng nào tham chiếu nhật ký nên không gãy gì.
+- `migrations/0002` cần **PostgreSQL >= 13** (0001 chỉ cần >= 10).
+
+### Yêu cầu xoá dữ liệu — `make an-danh`
+
+```
+DATABASE_DSN=... make an-danh
+```
+
+Chạy tay, **có người ký**: lệnh hỏi số điện thoại (qua stdin, **không** qua tham số dòng
+lệnh — tham số nằm trong `ps` và trong lịch sử shell), nguồn yêu cầu (`hotline`/`email`),
+tên người tiếp nhận, số phiếu, rồi bắt gõ `AN DANH` để xác nhận.
+
+Một giao dịch, ba việc: ghi đè `so_dien_thoai` bằng một giá trị vô danh duy nhất · thu hồi
+mọi phiên **còn hiệu lực** của người ấy · ghi một dòng `nhat_ky_an_danh` mang tên người
+tiếp nhận. Đầu ra chỉ có **mã định danh**, số phiên đã thu hồi và thời điểm — **không bao
+giờ có số điện thoại**, kể cả khi báo lỗi.
+
+**Cố ý không có tuyến API cho việc này.** Một tuyến nhận số điện thoại rồi xoá dữ liệu ứng
+với số ấy là một tuyến xoá dữ liệu *người khác*.
 
 ---
 
@@ -202,6 +276,7 @@ hồ sơ duyệt Zalo, và khai thiếu một mục cũng là vi phạm chính N
 | **Địa chỉ IP** của mỗi lượt đăng nhập (kể cả lượt thất bại) | `nhat_ky_dang_nhap.dia_chi_ip` | **chưa — phải bổ sung** |
 | Kết quả từng lượt đăng nhập, thành công lẫn thất bại | `nhat_ky_dang_nhap.ket_qua`, `.ly_do` | **chưa — phải bổ sung** |
 | Bản băm của token phiên (không phải token) | `phien.token_bam` | không cần khai riêng — dữ liệu kỹ thuật, không nhận dạng được ai |
+| Việc đã xử lý một yêu cầu xoá: ai tiếp nhận, nguồn, thời điểm | `nhat_ky_an_danh` | **chưa — nên khai**, kèm câu "chúng tôi lưu bằng chứng đã xử lý yêu cầu của bạn" |
 
 Không lưu: tên, email, vị trí, thông tin thiết bị, danh bạ, ảnh. Không có bộ theo dõi
 (analytics/SDK bên thứ ba) nào trong dịch vụ này.
@@ -214,15 +289,19 @@ tự dọn sau N tháng. Ba hệ quả phải nói ra:
 1. **Phải có một đường nhận yêu cầu xoá thật.** Hiện là **hotline và email trên màn Liên hệ**
    của app. Một chính sách "xoá khi được yêu cầu" mà không có chỗ để yêu cầu thì không phải
    là một chính sách.
-2. **Xoá theo Nghị định 13 nghĩa là ẩn danh hoặc xoá bản ghi định danh** (`nguoi_dung`, và các
-   `phien` của người đó). **Nhật ký đăng nhập thì giữ** — nó không chứa số điện thoại, chỉ
-   chứa `nguoi_dung_id`, nên sau khi bản ghi định danh biến mất thì dòng nhật ký không còn
-   chỉ về ai được nữa.
-3. **Chưa có tuyến API nào cho việc ấy** — xem NỢ #9. Hiện phải làm bằng tay trên CSDL, có
-   người chịu trách nhiệm ký. Đừng dựng vội một tuyến xoá: một tuyến xoá sai quyền còn tệ hơn
-   không có.
+2. **XOÁ NGHĨA LÀ ẨN DANH HOÁ** — chủ sản phẩm chốt sau khi phía Mini App phát hiện lược đồ
+   không cho xoá thật, và điều đó là **cố ý**: `nhat_ky_dang_nhap.nguoi_dung_id` tham chiếu
+   `nguoi_dung(id)`, còn nhật ký thì chỉ được ghi thêm, nên một hàng `nguoi_dung` đã từng
+   đăng nhập là không xoá được và cũng không null hoá khoá ngoại đi được. Dấu vết *"có một
+   lần đăng nhập lúc 14:02"* phải còn; *"người ấy là ai"* thì biến mất.
+   → Lệnh: **`make an-danh`** (xem mục "Yêu cầu xoá dữ liệu" ở trên).
+3. **Nhật ký đăng nhập thì GIỮ** — nó không chứa số điện thoại, chỉ chứa `nguoi_dung_id`,
+   nên sau khi định danh bị ghi đè thì dòng nhật ký không còn chỉ về ai được nữa. Nó vẫn
+   theo chính sách 90 ngày của riêng nó.
 
-**Chưa chốt:** thời hạn lưu `nhat_ky_dang_nhap` và `dia_chi_ip` (NỢ #7).
+**Nhật ký đăng nhập và `dia_chi_ip`: chậm nhất 90 ngày** (thực tế 83–90), dọn bằng `make don-nhat-ky` chạy hằng ngày. `nhat_ky_an_danh`
+thì **giữ vô thời hạn**: nó là bằng chứng đã xử lý một yêu cầu xoá, và một bằng chứng có hạn
+tự huỷ thì không phải bằng chứng. Nó không chứa số điện thoại.
 
 ---
 
@@ -241,15 +320,18 @@ bằng `httptest`; test của `internal/store` **tự SKIP kèm lý do** khi kh�
     kho_test.go:55: thiếu TEST_DATABASE_DSN — test chạm CSDL không chạy
 ```
 
-Chạy phần chạm CSDL (CSDL **dùng riêng cho test**, đã chạy migration):
+Chạy phần chạm CSDL (CSDL **dùng riêng cho test**, đã chạy **cả hai** migration — các ca này
+có `DROP` phân mảnh):
 
 ```
 TEST_DATABASE_DSN='<dsn>' go test ./internal/store
 ```
 
-Năm ca đó kiểm thứ chỉ CSDL mới trả lời được: ba lần ghi nằm trong một giao dịch (hỏng thì
-không còn `nguoi_dung` nào), trigger từ chối `UPDATE`/`DELETE` trên nhật ký, cùng một số thì
-cùng một `nguoi_dung_id`, và nhật ký không chứa số điện thoại.
+Mười hai ca đó (mười ba, tính cả hai ca con của ranh giới 90 ngày) kiểm thứ chỉ CSDL mới trả lời được: ba lần ghi nằm trong một giao dịch (hỏng thì
+không còn `nguoi_dung` nào) · trigger từ chối `UPDATE`/`DELETE` trên nhật ký · cùng một số
+thì cùng một `nguoi_dung_id` · nhật ký không chứa số điện thoại · ẩn danh xong thì số cũ
+biến mất, phiên còn hiệu lực bị thu hồi, nhật ký đăng nhập còn nguyên · `nhat_ky_don_qua_han()`
+DROP đúng phân mảnh quá hạn và không đụng phân mảnh còn hạn.
 
 Bỏ qua thì phải **nhìn thấy là đã bỏ qua**. Một gói in `ok` trong khi chưa chạy gì là cách
 tệ nhất để mất niềm tin vào bộ test.
@@ -279,18 +361,22 @@ Trên máy chưa có `make` (Windows): `mingw32-make check`, hoặc chạy thẳ
    đăng nhập đang được lưu, trong khi văn bản hiện chỉ khai số điện thoại — xem bảng
    "Máy chủ thực sự lưu những gì". Văn bản ấy đi kèm hồ sơ duyệt Zalo, khai thiếu là vi phạm
    chính Nghị định 13.
-7. **Thời hạn lưu `nhat_ky_dang_nhap` và `dia_chi_ip`** (riêng số điện thoại đã chốt: giữ tới
-   khi người dùng yêu cầu xoá).
-8. **Chạy thử `migrations/0001_init.sql` trên một Postgres thật.** Máy dựng kho không có
-   `psql` và không có Docker đang chạy, nên lược đồ **chưa từng được áp dụng lần nào** — cú
-   pháp mới chỉ được đọc bằng mắt, và năm ca test chạm CSDL trong `internal/store` **chưa
-   từng chạy thật lần nào**. Khi chạy, kiểm luôn hai việc: `UPDATE`/`DELETE` trên
-   `nhat_ky_dang_nhap` phải bị trigger từ chối, và `GENERATED ALWAYS AS IDENTITY` cần
-   Postgres 10 trở lên.
-9. **Đường xử lý yêu cầu xoá dữ liệu.** Chính sách đã chốt là "giữ tới khi người dùng yêu
-   cầu xoá", nhận qua hotline/email trên màn Liên hệ. Hiện **chưa có tuyến API nào** cho việc
-   ấy: phải làm tay trên CSDL, có người ký. Khi dựng, nhớ *ẩn danh hoặc xoá bản ghi định
-   danh*, **giữ nhật ký đăng nhập**.
+7. ~~Thời hạn lưu nhật ký~~ — **ĐÃ CHỐT: chậm nhất 90 ngày** (thực tế 83–90), cưỡng chế bằng
+   `make don-nhat-ky`. Việc còn lại là **cắm nó vào cron HẰNG NGÀY** của môi trường thật:
+   chạy thưa hơn thì khoảng cách giữa hai lần chạy cộng thẳng vào trần, và không chạy thì
+   không có gì tự dọn. `make check` không phát hiện được chuyện này.
+8. **Chạy thử CẢ HAI migration trên một Postgres thật.** Máy dựng kho không có `psql` và
+   không có Docker đang chạy, nên lược đồ **chưa từng được áp dụng lần nào** — cú pháp mới
+   chỉ được đọc bằng mắt, và **mười hai ca test chạm CSDL trong `internal/store` chưa từng
+   chạy thật lần nào**. Đây là mục nợ nặng nhất trong danh sách này. Khi chạy, kiểm bốn việc:
+   `UPDATE`/`DELETE` trên `nhat_ky_dang_nhap` bị trigger từ chối (kể cả sau khi đã phân
+   mảnh) · `nhat_ky_don_qua_han()` DROP đúng phân mảnh quá hạn · `nhat_ky_tao_phan_manh()`
+   chạy lại được · `make an-danh` ẩn danh xong thì phiên cũ hết vào được. **Cần PostgreSQL
+   >= 13** (trigger mức dòng trên bảng phân mảnh).
+9. ~~Đường xử lý yêu cầu xoá~~ — **ĐÃ CÓ: `make an-danh`** (một giao dịch: ghi đè định danh,
+   thu hồi phiên, ghi bằng chứng). Việc còn lại là **quy trình của người**: ai trực hotline,
+   ai được phép chạy lệnh, lưu phiếu ở đâu, và trả lời người yêu cầu trong bao lâu. Nghị
+   định 13 có thời hạn trả lời — **chưa ai chốt con số ấy cho sản phẩm này**.
 10. **Chưa có middleware xác thực bearer token.** Bước này chỉ CẤP phiên; chưa tuyến nào
     tiêu thụ nó. Khi thêm tuyến cần đăng nhập: tra `phien` theo `token_bam`, loại phiên đã
     `het_han_luc` hoặc có `thu_hoi_luc`, và so sánh băm bằng hàm so sánh thời gian hằng định.

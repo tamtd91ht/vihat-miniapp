@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,8 +24,9 @@ import (
 //
 //	TEST_DATABASE_DSN='<dsn>' go test ./internal/store
 //
-// CSDL đó phải đã chạy migrations/0001_init.sql, và phải là CSDL DÙNG RIÊNG cho
-// test: các ca dưới đây có ghi dữ liệu.
+// CSDL đó phải đã chạy CẢ HAI migration trong migrations/, và phải là CSDL DÙNG
+// RIÊNG cho test: các ca dưới đây có ghi dữ liệu, và ca dọn nhật ký có DROP
+// phân mảnh.
 func moKhoTest(t *testing.T) *Kho {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_DSN")
@@ -39,12 +42,17 @@ func moKhoTest(t *testing.T) *Kho {
 	return k
 }
 
-// soTest sinh số giả riêng cho mỗi lần chạy, dựa trên số giả đã thống nhất
-// 0900000000 -> 84900000000, để hai lần chạy không đụng ràng buộc UNIQUE.
+// soTest sinh số giả riêng cho mỗi ca, họ hàng với số giả đã thống nhất
+// 0900000000, để hai ca không đụng ràng buộc UNIQUE.
+//
+// Bắt đầu bằng "849" cho giống số đã chuẩn hoá, và KHÔNG bắt đầu bằng "0" —
+// "0" là dấu hiệu của hàng đã ẩn danh (xem an_danh.go).
 func soTest(t *testing.T) string {
 	t.Helper()
-	return "84900" + time.Now().Format("000000") + "0"
+	return fmt.Sprintf("849%012d", (time.Now().UnixNano()+atomic.AddInt64(&demSoTest, 1))%1e12)
 }
+
+var demSoTest int64
 
 func ipTest() *netip.Addr {
 	a := netip.MustParseAddr("203.0.113.7") // TEST-NET-3, RFC 5737 — không phải IP thật
