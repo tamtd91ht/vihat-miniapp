@@ -20,12 +20,10 @@ pipeline {
   }
 
   parameters {
-    string(name: 'REGISTRY', defaultValue: 'registry.vihat.vn',
+    string(name: 'REGISTRY', defaultValue: 'harbor.omicrm.services',
            description: 'Máy chủ Harbor, không kèm https://')
-    string(name: 'PROJECT', defaultValue: 'vihat',
+    string(name: 'PROJECT', defaultValue: 'ci',
            description: 'Project trong Harbor — ảnh là <REGISTRY>/<PROJECT>/vihat-miniapp')
-    string(name: 'REGISTRY_CRED', defaultValue: 'harbor-vihat',
-           description: 'ID credentials trong Jenkins. CHỈ LÀ ID, không bao giờ là giá trị thật.')
   }
 
   environment {
@@ -51,6 +49,29 @@ pipeline {
         //     `--mount=type=cache`; docker 1.13.1 (bản mặc định của CentOS 7) không hiểu cả
         //     hai, và stage đóng ảnh sẽ đỏ SAU KHI cổng kiểm đã xanh.
         sh 'go version; docker version --format "server {{.Server.Version}} · client {{.Client.Version}}" || docker version'
+
+        // MÁY CHỦ ĐÃ ĐĂNG NHẬP REGISTRY CHƯA. Stage đóng ảnh không `docker login` — nó dựa vào
+        // phiên đăng nhập sẵn có của user `jenkins` (xem lý do đầy đủ ở stage ấy). Đó là một
+        // trạng thái nằm ngoài kho này, nên nó phải được kiểm ra mặt chứ không được giả định.
+        //
+        // Kiểm ở đây chứ không để `docker push` tự đỏ: push đỏ sau khi đã dựng xong ảnh, tức
+        // mất hai phút, và câu nó in ra là "denied: requested access to the resource is denied"
+        // — đọc như lỗi phân quyền của tài khoản, chứ không như "máy này chưa đăng nhập bao giờ".
+        sh '''
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if ! grep -q "$REGISTRY" "$cfg" 2>/dev/null; then
+            echo ""
+            echo "MÁY CHỦ BUILD CHƯA ĐĂNG NHẬP $REGISTRY"
+            echo "Pipeline này cố ý không mang credentials: nó dùng phiên đăng nhập sẵn của"
+            echo "user jenkins, giống các job khác trên máy chủ. Chạy MỘT LẦN dưới user ấy:"
+            echo "    sudo -u jenkins docker login $REGISTRY"
+            echo "Hoặc, nếu muốn kho này có danh tính đẩy ảnh riêng, tạo một mục credentials"
+            echo "kiểu Username with password ở phạm vi Global rồi bọc bước push bằng"
+            echo "withCredentials — xem chú thích ở stage 'Đóng ảnh'."
+            echo ""
+            exit 1
+          fi
+        '''
         script {
           env.TAG = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
           if (!env.TAG) { error('Không lấy được commit hiện tại — không có thẻ ảnh nào để đặt.') }
@@ -94,46 +115,41 @@ pipeline {
     // ấy là những loại agent Jenkins core tự biết, tức không plugin nào đăng ký thêm loại nào.
     //
     // Máy chủ Jenkins dùng chung với dự án khác, nên "cài thêm plugin" không phải quyết định
-    // của kho này. `docker` CLI cộng `withCredentials` là thứ có ở mọi bản Jenkins, và đổi lại
-    // ta phải tự làm ba việc plugin vốn làm hộ — cả ba đều ghi lý do tại chỗ bên dưới.
+    // của kho này. `docker` CLI là thứ có sẵn.
+    //
+    // KHÔNG `docker login`, KHÔNG credentials — VÀ ĐÓ LÀ MỘT PHỤ THUỘC, không phải một chỗ
+    // thiếu. Máy chủ Jenkins này đã đăng nhập sẵn và lâu dài vào Harbor bằng tài khoản của user
+    // `jenkins`: token nằm trong `~jenkins/.docker/config.json`, do ai đó đăng nhập một lần và
+    // không phiên bản hoá ở đâu cả. Pipeline `cloud-vihat-saas-omicrm-callbot-service` trên
+    // cùng máy chủ đẩy ảnh đúng theo cách này và đã chạy nhiều tháng — 21/09/2026 người dùng
+    // chốt dùng chung cơ chế ấy thay vì tạo mục credentials riêng.
+    //
+    // CÁI GIÁ, ghi ra để người sau biết mình đang đổi cái gì lấy cái gì:
+    //   · Nhật ký chỉ trả lời được "Jenkins đẩy", không trả lời được "TÀI KHOẢN NÀO đẩy".
+    //   · Ngày token trên máy chủ hết hạn hoặc bị thu hồi, MỌI job đóng ảnh đỏ cùng lúc, và
+    //     không kho nào chứa manh mối vì trạng thái ấy không nằm trong kho nào.
+    // Muốn lấy lại danh tính riêng cho kho này: thêm một mục credentials kiểu Username with
+    // password ở phạm vi Global rồi bọc phần `sh` bên dưới bằng `withCredentials`.
+    //
+    // Vì phụ thuộc ấy vô hình, stage 'Chuẩn bị' kiểm nó tường minh — hỏng sớm với đúng câu
+    // giải thích, thay vì đỏ ở `docker push` sau hai phút dựng với "denied: requested access to
+    // the resource is denied", một dòng đọc như lỗi phân quyền chứ không như máy chưa đăng nhập.
     stage('Đóng ảnh') {
       steps {
         script { env.ANH = "${params.REGISTRY}/${params.PROJECT}/${env.TEN_ANH}:${env.TAG}" }
 
-        // (1) DOCKER_CONFIG riêng cho từng lượt build. `docker login` mặc định ghi vào
-        // ~/.docker/config.json của user `jenkins` — MỘT tệp dùng chung cho mọi job trên máy.
-        // Trên một Jenkins dùng chung, `docker logout` ở cuối lượt này sẽ đá văng phiên đăng
-        // nhập của job dự án khác đang đẩy ảnh giữa chừng. Tách thư mục cấu hình thì không ai
-        // đụng ai, và xoá thư mục ở `post` chính là logout.
-        withEnv(["DOCKER_CONFIG=${env.WORKSPACE}/.docker-cau-hinh"]) {
+        sh '''
+          # --pull: lấy bản mới nhất của `golang:1.26-bookworm` và của ảnh nền runtime. Không có
+          # nó, một ảnh nền đã nằm sẵn trong cache máy chủ từ nhiều tuần trước sẽ được dùng lại,
+          # và bản vá CVE của ảnh nền không bao giờ vào tới ảnh phát hành.
+          docker build --pull --build-arg VERSION="$TAG" -t "$ANH" -f Dockerfile .
+          docker push "$ANH"
 
-          // (2) Mật khẩu registry KHÔNG BAO GIỜ nằm trên dòng lệnh và không đi qua nội suy
-          // Groovy: script để trong nháy đơn (Groovy không nội suy), giá trị vào bằng biến môi
-          // trường, và `--password-stdin` thay cho `-p`. `set +x` vì bước `sh` của Jenkins chạy
-          // `sh -xe`, mà `-x` in ra ĐỐI SỐ ĐÃ KHAI TRIỂN — `echo "$REG_PASS"` sẽ hiện nguyên
-          // mật khẩu trong log. Bộ lọc che của Jenkins bắt được, nhưng một bí mật đã ra tới
-          // chỗ cần bộ lọc thì chỉ còn một lớp giữa nó và log (luật 8).
-          withCredentials([usernamePassword(credentialsId: params.REGISTRY_CRED,
-                                            usernameVariable: 'REG_USER',
-                                            passwordVariable: 'REG_PASS')]) {
-            sh '''
-              set +x
-              echo "$REG_PASS" | docker login -u "$REG_USER" --password-stdin "$REGISTRY"
-              set -x
-
-              # --pull: lấy bản mới nhất của `golang:1.26-bookworm` và của ảnh nền runtime.
-              # Không có nó, một ảnh nền đã nằm sẵn trong cache máy chủ từ nhiều tuần trước sẽ
-              # được dùng lại, và bản vá CVE của ảnh nền không bao giờ vào tới ảnh phát hành.
-              docker build --pull --build-arg VERSION="$TAG" -t "$ANH" -f Dockerfile .
-              docker push "$ANH"
-
-              # (3) Bỏ thẻ ảnh khỏi máy chủ sau khi đã đẩy. Máy dùng chung, và mỗi commit sinh
-              # một thẻ mới — không dọn thì đĩa đầy vì kho này. Chỉ bỏ THẺ; các tầng nằm lại
-              # trong cache và lượt sau vẫn dựng nhanh.
-              docker image rm "$ANH" || true
-            '''
-          }
-        }
+          # Bỏ thẻ ảnh khỏi máy chủ sau khi đã đẩy. Máy dùng chung, và mỗi commit sinh một thẻ
+          # mới — không dọn thì đĩa đầy vì kho này. Chỉ bỏ THẺ; các tầng nằm lại trong cache và
+          # lượt sau vẫn dựng nhanh.
+          docker image rm "$ANH" || true
+        '''
 
         // Ghi lại NGAY SAU khi push thành công (bước `sh` ở trên đỏ thì không tới được đây).
         // Đây là nhật ký "commit nào đã thành ảnh", và nó là thứ duy nhất trả lời được câu ấy
@@ -141,16 +157,6 @@ pipeline {
         script { currentBuild.description = "anh-tu-commit:${env.TAG}" }
         echo "DA DAY  ${env.ANH}"
       }
-    }
-  }
-
-  post {
-    always {
-      // `config.json` là tệp `docker login` ghi token registry vào. Xoá ĐÚNG nó chứ không xoá
-      // cả thư mục: một lệnh xoá đệ quy dựng từ biến môi trường là một lệnh chỉ đúng chừng nào
-      // biến ấy đúng. Chạy cả khi build đỏ — một lượt hỏng GIỮA login và push là đúng lượt để
-      // lại token nằm trên đĩa.
-      sh 'rm -f "$WORKSPACE/.docker-cau-hinh/config.json"'
     }
   }
 }
