@@ -37,13 +37,20 @@ pipeline {
 
     stage('Chuẩn bị') {
       steps {
-        // CHỈ CÒN `docker`. `go` và `make` KHÔNG còn là điều kiện của máy chủ build: cổng
-        // kiểm chạy trong container `golang` (stage sau), nên toolchain đi theo ẢNH chứ không
-        // theo máy. Lượt chạy đầu tiên trên Jenkins thật đổ đúng ở dòng cũ vì máy chủ không
-        // có `go` — và "máy chủ CI phải có sẵn Go đúng phiên bản cho MỖI kho nó dựng" là điều
-        // kiện không ai giữ nổi, nó chỉ đúng tới lần nâng phiên bản đầu tiên của một kho nào
-        // đó. `docker` thì không bỏ được: stage đóng ảnh cần nó.
-        sh 'command -v docker'
+        // BỐN công cụ, và `gcc` nằm trong danh sách vì một lý do không hiển nhiên: `make
+        // check` chạy `go test -race`, mà `-race` cần cgo, tức cần một trình biên dịch C.
+        // Thiếu nó thì lỗi rơi vào giữa cổng kiểm dưới dạng "race is only supported on ...
+        // with cgo" — một dòng trông như mã hỏng chứ không phải như máy chủ thiếu công cụ.
+        // Hỏng sớm, và nói đúng thứ bị thiếu.
+        sh 'command -v go && command -v docker && command -v make && command -v gcc'
+
+        // In ra để lượt build tự làm chứng về môi trường nó chạy. Hai con số cần nhìn:
+        //   · Go phải ≥ 1.25 (`go 1.25.0` trong go.mod). Thấp hơn thì hoặc GOTOOLCHAIN tự tải
+        //     bản mới — cần mạng — hoặc `go vet` đỏ với "go.mod requires go >= 1.25".
+        //   · Docker phải ≥ 18.09, ngưỡng có BuildKit. Dockerfile dùng `# syntax=` và
+        //     `--mount=type=cache`; docker 1.13.1 (bản mặc định của CentOS 7) không hiểu cả
+        //     hai, và stage đóng ảnh sẽ đỏ SAU KHI cổng kiểm đã xanh.
+        sh 'go version; docker version --format "server {{.Server.Version}} · client {{.Client.Version}}" || docker version'
         script {
           env.TAG = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
           if (!env.TAG) { error('Không lấy được commit hiện tại — không có thẻ ảnh nào để đặt.') }
@@ -59,51 +66,21 @@ pipeline {
     //
     // `make check` cố ý KHÔNG nạp `.env.local` và các ca chạm CSDL tự SKIP khi thiếu
     // `TEST_DATABASE_DSN`, nên nó chạy được trên máy chủ build mà không cần Postgres.
-    //
-    // CHẠY TRONG CONTAINER, KHÔNG CHẠY TRÊN MÁY CHỦ BUILD. Đổi ngày 2026-09-21, sau lượt chạy
-    // đầu tiên trên Jenkins thật: máy chủ (CentOS 7, git 1.8.3.1) không có `go`. Cài Go lên
-    // máy chủ cũng xong việc hôm nay, nhưng nó buộc cổng kiểm chạy trên phiên bản Go mà máy
-    // chủ TÌNH CỜ có, còn ảnh phát hành thì dựng bằng `golang:${GO_VERSION}` ghi trong
-    // Dockerfile. Hai phiên bản ấy lệch nhau lúc nào không ai biết, và triệu chứng là CI
-    // xanh trong khi ảnh đỏ — hoặc tệ hơn, cả hai xanh trên hai bản mã khác nhau.
     stage('Cổng kiểm') {
-      agent {
-        docker {
-          // Phải khớp `ARG GO_VERSION` trong Dockerfile — có phép kiểm ở dưới, không dựa vào
-          // trí nhớ của người sửa.
-          image 'golang:1.26-bookworm'
-
-          // reuseNode: chạy container NGAY TRÊN node và workspace của lượt build này. Thiếu
-          // nó, Jenkins xin một node khác và checkout lại — hai bản sao mã cho một lượt build,
-          // và stage đóng ảnh sẽ dựng từ bản không phải bản vừa được kiểm.
-          reuseNode true
-
-          // Plugin chạy container bằng UID của user `jenkins`, mà UID ấy không có dòng nào
-          // trong /etc/passwd của ảnh — nên HOME là `/` và KHÔNG ghi được: `go` chết ngay ở
-          // "failed to initialize build cache". Một biến là đủ: GOCACHE, GOPATH và GOMODCACHE
-          // đều dẫn xuất từ HOME, và `go` tự tạo các thư mục ấy.
-          //
-          // /tmp chứ KHÔNG phải một thư mục trong workspace: `make check` gọi `gofmt -l .`,
-          // mà lệnh ấy duyệt xuống MỌI thư mục con. Kho module tải về nằm trong workspace sẽ
-          // bị đem đi kiểm định dạng, và cổng kiểm đỏ vì mã nguồn của người khác.
-          args '-e HOME=/tmp/go-home'
-        }
-      }
       steps {
-        // `make check` cần `make`; `go test -race` cần cgo, tức cần `gcc`. Ảnh
-        // `golang:*-bookworm` mang sẵn cả hai — bản `-alpine` thì KHÔNG, đừng đổi sang nó cho
-        // nhẹ. Kiểm ở đây để ngày điều đó không còn đúng thì lỗi nói đúng thứ bị thiếu, thay
-        // vì rơi vào giữa cổng kiểm dưới dạng "make: not found".
-        sh 'command -v make && command -v gcc'
-
-        // Go của cổng kiểm phải KHỚP Go đóng ảnh. `tr -d` vì kho này được sửa trên Windows và
-        // không có .gitattributes: một commit mang CRLF làm phép so sánh đỏ vì lý do sai.
+        // CẢNH BÁO, KHÔNG CHẶN. Go của máy chủ build và Go đóng ảnh (`ARG GO_VERSION` trong
+        // Dockerfile) là hai thứ khác nhau: cái sau kho này ghim được, cái trước thì không —
+        // Jenkins dùng chung với dự án khác, phiên bản Go trên đó không phải quyết định của
+        // kho này. Chặn ở đây là chặn một lượt phát hành vì một thứ không ai ở đây sửa được.
+        //
+        // Nhưng cũng KHÔNG im lặng: lệch phiên bản là cách CI xanh trên một toolchain còn ảnh
+        // dựng bằng toolchain khác, và ngày nó cắn thì dòng này là thứ duy nhất trong log nói
+        // trước được. `tr -d` vì kho này được sửa trên Windows và không có .gitattributes.
         sh '''
           mong="$(sed -n 's/^ARG GO_VERSION=//p' Dockerfile | tr -d '\\r')"
           case "$(go env GOVERSION)" in
             go"$mong"|go"$mong".*) ;;
-            *) echo "Go cua cong kiem $(go env GOVERSION) khac ARG GO_VERSION=$mong trong Dockerfile"
-               exit 1 ;;
+            *) echo "CANH BAO: cong kiem chay Go $(go env GOVERSION), anh dung ARG GO_VERSION=$mong" ;;
           esac
         '''
 
@@ -111,21 +88,67 @@ pipeline {
       }
     }
 
+    // KHÔNG DÙNG `docker.build` / `docker.withRegistry`. Hai lệnh ấy thuộc plugin Docker
+    // Pipeline, và Jenkins này KHÔNG CÓ nó: lượt chạy ngày 2026-09-21 chết ngay lúc biên dịch
+    // Jenkinsfile với "Invalid agent type docker. Must be one of [any, label, none]" — ba tên
+    // ấy là những loại agent Jenkins core tự biết, tức không plugin nào đăng ký thêm loại nào.
+    //
+    // Máy chủ Jenkins dùng chung với dự án khác, nên "cài thêm plugin" không phải quyết định
+    // của kho này. `docker` CLI cộng `withCredentials` là thứ có ở mọi bản Jenkins, và đổi lại
+    // ta phải tự làm ba việc plugin vốn làm hộ — cả ba đều ghi lý do tại chỗ bên dưới.
     stage('Đóng ảnh') {
       steps {
-        script {
-          def ten = "${params.REGISTRY}/${params.PROJECT}/${env.TEN_ANH}"
-          docker.withRegistry("https://${params.REGISTRY}", params.REGISTRY_CRED) {
-            def anh = docker.build("${ten}:${env.TAG}",
-                                   "--build-arg VERSION=${env.TAG} -f Dockerfile .")
-            anh.push()
-            // Ghi lại NGAY SAU khi push thành công. Đây là nhật ký "commit nào đã thành ảnh",
-            // và nó là thứ duy nhất trả lời được câu ấy khi có người hỏi sáu tuần sau.
-            currentBuild.description = "anh-tu-commit:${env.TAG}"
+        script { env.ANH = "${params.REGISTRY}/${params.PROJECT}/${env.TEN_ANH}:${env.TAG}" }
+
+        // (1) DOCKER_CONFIG riêng cho từng lượt build. `docker login` mặc định ghi vào
+        // ~/.docker/config.json của user `jenkins` — MỘT tệp dùng chung cho mọi job trên máy.
+        // Trên một Jenkins dùng chung, `docker logout` ở cuối lượt này sẽ đá văng phiên đăng
+        // nhập của job dự án khác đang đẩy ảnh giữa chừng. Tách thư mục cấu hình thì không ai
+        // đụng ai, và xoá thư mục ở `post` chính là logout.
+        withEnv(["DOCKER_CONFIG=${env.WORKSPACE}/.docker-cau-hinh"]) {
+
+          // (2) Mật khẩu registry KHÔNG BAO GIỜ nằm trên dòng lệnh và không đi qua nội suy
+          // Groovy: script để trong nháy đơn (Groovy không nội suy), giá trị vào bằng biến môi
+          // trường, và `--password-stdin` thay cho `-p`. `set +x` vì bước `sh` của Jenkins chạy
+          // `sh -xe`, mà `-x` in ra ĐỐI SỐ ĐÃ KHAI TRIỂN — `echo "$REG_PASS"` sẽ hiện nguyên
+          // mật khẩu trong log. Bộ lọc che của Jenkins bắt được, nhưng một bí mật đã ra tới
+          // chỗ cần bộ lọc thì chỉ còn một lớp giữa nó và log (luật 8).
+          withCredentials([usernamePassword(credentialsId: params.REGISTRY_CRED,
+                                            usernameVariable: 'REG_USER',
+                                            passwordVariable: 'REG_PASS')]) {
+            sh '''
+              set +x
+              echo "$REG_PASS" | docker login -u "$REG_USER" --password-stdin "$REGISTRY"
+              set -x
+
+              # --pull: lấy bản mới nhất của `golang:1.26-bookworm` và của ảnh nền runtime.
+              # Không có nó, một ảnh nền đã nằm sẵn trong cache máy chủ từ nhiều tuần trước sẽ
+              # được dùng lại, và bản vá CVE của ảnh nền không bao giờ vào tới ảnh phát hành.
+              docker build --pull --build-arg VERSION="$TAG" -t "$ANH" -f Dockerfile .
+              docker push "$ANH"
+
+              # (3) Bỏ thẻ ảnh khỏi máy chủ sau khi đã đẩy. Máy dùng chung, và mỗi commit sinh
+              # một thẻ mới — không dọn thì đĩa đầy vì kho này. Chỉ bỏ THẺ; các tầng nằm lại
+              # trong cache và lượt sau vẫn dựng nhanh.
+              docker image rm "$ANH" || true
+            '''
           }
-          echo "DA DAY  ${ten}:${env.TAG}"
         }
+
+        // Ghi lại NGAY SAU khi push thành công (bước `sh` ở trên đỏ thì không tới được đây).
+        // Đây là nhật ký "commit nào đã thành ảnh", và nó là thứ duy nhất trả lời được câu ấy
+        // khi có người hỏi sáu tuần sau.
+        script { currentBuild.description = "anh-tu-commit:${env.TAG}" }
+        echo "DA DAY  ${env.ANH}"
       }
+    }
+  }
+
+  post {
+    always {
+      // Xoá thư mục cấu hình docker của lượt này — nó chứa token đăng nhập registry. Chạy cả
+      // khi build đỏ: một lượt hỏng GIỮA login và push là đúng lượt để lại token nằm trên đĩa.
+      sh 'rm -rf "$WORKSPACE/.docker-cau-hinh" || true'
     }
   }
 }
