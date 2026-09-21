@@ -37,10 +37,13 @@ pipeline {
 
     stage('Chuẩn bị') {
       steps {
-        // `make` nằm trong danh sách vì stage sau gọi `make check`. Thiếu nó thì lỗi rơi vào
-        // giữa cổng kiểm dưới dạng "make: not found" — một dòng trông như cổng kiểm hỏng chứ
-        // không phải như máy chủ build thiếu công cụ. Hỏng sớm, và nói đúng thứ bị thiếu.
-        sh 'command -v go && command -v docker && command -v make'
+        // CHỈ CÒN `docker`. `go` và `make` KHÔNG còn là điều kiện của máy chủ build: cổng
+        // kiểm chạy trong container `golang` (stage sau), nên toolchain đi theo ẢNH chứ không
+        // theo máy. Lượt chạy đầu tiên trên Jenkins thật đổ đúng ở dòng cũ vì máy chủ không
+        // có `go` — và "máy chủ CI phải có sẵn Go đúng phiên bản cho MỖI kho nó dựng" là điều
+        // kiện không ai giữ nổi, nó chỉ đúng tới lần nâng phiên bản đầu tiên của một kho nào
+        // đó. `docker` thì không bỏ được: stage đóng ảnh cần nó.
+        sh 'command -v docker'
         script {
           env.TAG = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
           if (!env.TAG) { error('Không lấy được commit hiện tại — không có thẻ ảnh nào để đặt.') }
@@ -56,8 +59,54 @@ pipeline {
     //
     // `make check` cố ý KHÔNG nạp `.env.local` và các ca chạm CSDL tự SKIP khi thiếu
     // `TEST_DATABASE_DSN`, nên nó chạy được trên máy chủ build mà không cần Postgres.
+    //
+    // CHẠY TRONG CONTAINER, KHÔNG CHẠY TRÊN MÁY CHỦ BUILD. Đổi ngày 2026-09-21, sau lượt chạy
+    // đầu tiên trên Jenkins thật: máy chủ (CentOS 7, git 1.8.3.1) không có `go`. Cài Go lên
+    // máy chủ cũng xong việc hôm nay, nhưng nó buộc cổng kiểm chạy trên phiên bản Go mà máy
+    // chủ TÌNH CỜ có, còn ảnh phát hành thì dựng bằng `golang:${GO_VERSION}` ghi trong
+    // Dockerfile. Hai phiên bản ấy lệch nhau lúc nào không ai biết, và triệu chứng là CI
+    // xanh trong khi ảnh đỏ — hoặc tệ hơn, cả hai xanh trên hai bản mã khác nhau.
     stage('Cổng kiểm') {
+      agent {
+        docker {
+          // Phải khớp `ARG GO_VERSION` trong Dockerfile — có phép kiểm ở dưới, không dựa vào
+          // trí nhớ của người sửa.
+          image 'golang:1.26-bookworm'
+
+          // reuseNode: chạy container NGAY TRÊN node và workspace của lượt build này. Thiếu
+          // nó, Jenkins xin một node khác và checkout lại — hai bản sao mã cho một lượt build,
+          // và stage đóng ảnh sẽ dựng từ bản không phải bản vừa được kiểm.
+          reuseNode true
+
+          // Plugin chạy container bằng UID của user `jenkins`, mà UID ấy không có dòng nào
+          // trong /etc/passwd của ảnh — nên HOME là `/` và KHÔNG ghi được: `go` chết ngay ở
+          // "failed to initialize build cache". Một biến là đủ: GOCACHE, GOPATH và GOMODCACHE
+          // đều dẫn xuất từ HOME, và `go` tự tạo các thư mục ấy.
+          //
+          // /tmp chứ KHÔNG phải một thư mục trong workspace: `make check` gọi `gofmt -l .`,
+          // mà lệnh ấy duyệt xuống MỌI thư mục con. Kho module tải về nằm trong workspace sẽ
+          // bị đem đi kiểm định dạng, và cổng kiểm đỏ vì mã nguồn của người khác.
+          args '-e HOME=/tmp/go-home'
+        }
+      }
       steps {
+        // `make check` cần `make`; `go test -race` cần cgo, tức cần `gcc`. Ảnh
+        // `golang:*-bookworm` mang sẵn cả hai — bản `-alpine` thì KHÔNG, đừng đổi sang nó cho
+        // nhẹ. Kiểm ở đây để ngày điều đó không còn đúng thì lỗi nói đúng thứ bị thiếu, thay
+        // vì rơi vào giữa cổng kiểm dưới dạng "make: not found".
+        sh 'command -v make && command -v gcc'
+
+        // Go của cổng kiểm phải KHỚP Go đóng ảnh. `tr -d` vì kho này được sửa trên Windows và
+        // không có .gitattributes: một commit mang CRLF làm phép so sánh đỏ vì lý do sai.
+        sh '''
+          mong="$(sed -n 's/^ARG GO_VERSION=//p' Dockerfile | tr -d '\\r')"
+          case "$(go env GOVERSION)" in
+            go"$mong"|go"$mong".*) ;;
+            *) echo "Go cua cong kiem $(go env GOVERSION) khac ARG GO_VERSION=$mong trong Dockerfile"
+               exit 1 ;;
+          esac
+        '''
+
         sh 'make check'
       }
     }
