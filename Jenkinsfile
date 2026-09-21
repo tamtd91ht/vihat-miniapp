@@ -146,9 +146,11 @@ pipeline {
 
   post {
     always {
-      // Xoá thư mục cấu hình docker của lượt này — nó chứa token đăng nhập registry. Chạy cả
-      // khi build đỏ: một lượt hỏng GIỮA login và push là đúng lượt để lại token nằm trên đĩa.
-      sh 'rm -rf "$WORKSPACE/.docker-cau-hinh" || true'
+      // `config.json` là tệp `docker login` ghi token registry vào. Xoá ĐÚNG nó chứ không xoá
+      // cả thư mục: một lệnh xoá đệ quy dựng từ biến môi trường là một lệnh chỉ đúng chừng nào
+      // biến ấy đúng. Chạy cả khi build đỏ — một lượt hỏng GIỮA login và push là đúng lượt để
+      // lại token nằm trên đĩa.
+      sh 'rm -f "$WORKSPACE/.docker-cau-hinh/config.json"'
     }
   }
 }
