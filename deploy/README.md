@@ -273,7 +273,7 @@ trường, và trên cụm môi trường ấy đến từ Secret/ConfigMap qua 
 
 | Thiếu | Hệ quả nếu bỏ qua |
 |---|---|
-| **Ingress / TLS** | Chưa có đường vào từ Internet. Zalo Mini App chỉ gọi được qua **HTTPS** |
+| **Ingress / TLS** | Chưa có đường vào từ Internet. Zalo Mini App chỉ gọi được qua **HTTPS**. **HAI đường phải mở, không phải một:** `/api/v1/sessions` cho Mini App, và `/webhooks/zalo` cho hạ tầng Zalo gọi vào. Quên đường thứ hai thì webhook nhận 404 và **Zalo tắt nó** — mà lúc ấy không có gì báo cho ai, nó chỉ lặng đi |
 | **Khai báo proxy tin cậy** | Đứng sau ingress thì `RemoteAddr` là IP của proxy: cả thế giới **chung một xô** trong bộ giới hạn theo IP, và `nhat_ky_dang_nhap.dia_chi_ip` ghi nhầm IP. Xem NỢ #5 ở README gốc. **Đừng** bật tin `X-Forwarded-For` trước khi khai proxy tin cậy — ai cũng giả được header đó |
 | **NetworkPolicy** | Mọi pod trong namespace gọi thẳng được vào cổng 8080 |
 | **PodDisruptionBudget** | Một lần drain node có thể hạ cả hai bản sao cùng lúc |

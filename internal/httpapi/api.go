@@ -69,17 +69,22 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 	}
 }
 
-// Handler dựng bộ định tuyến. Chỉ hai tuyến, cả hai CÔNG KHAI và nói rõ vì sao:
+// Handler dựng bộ định tuyến. Ba tuyến, cả ba CÔNG KHAI và nói rõ vì sao:
 //
 //	POST /api/v1/sessions — công khai vì đây CHÍNH LÀ tuyến đăng nhập: người gọi
 //	                        chưa có gì để xác thực. Thứ bảo vệ nó là token của
 //	                        Zalo (chỉ Zalo cấp được) + giới hạn theo IP.
 //	GET  /healthz         — công khai cho thăm dò sức khoẻ của hạ tầng. Phản hồi
 //	                        không mang thông tin nội bộ: chỉ "ok" hoặc 503.
+//	     /webhooks/zalo   — công khai vì Zalo gọi từ hạ tầng của họ, không mang
+//	                        phiên nào. Hôm nay nó không đọc và không lưu gì, và
+//	                        đó là điều kiện để "không kiểm chứng" còn chấp nhận
+//	                        được — xem webhook_zalo.go.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/sessions", s.taoPhien)
 	mux.HandleFunc("/healthz", s.healthz)
+	s.mountWebhookZalo(mux)
 	return s.cors.boc(mux)
 }
 
