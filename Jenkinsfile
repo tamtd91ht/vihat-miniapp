@@ -2,7 +2,7 @@
 //
 //   · build CÁI GÌ   — đúng một ảnh, `vihat-miniapp`
 //   · build KHI NÀO  — mọi lần `main` nhích lên. Xem §"Vì sao KHÔNG có bộ lọc dựng lại"
-//   · đẩy ĐI ĐÂU     — tham số registry của riêng lượt chạy này
+//   · đẩy ĐI ĐÂU     — hằng số REGISTRY/PROJECT trong khối `environment` ngay dưới
 //
 // PHẠM VI DỪNG Ở ẢNH. Không `kubectl apply`, không đụng cụm — đó là việc của devops, và một
 // job vừa đóng ảnh vừa triển khai là một job không ai dám bấm lại.
@@ -19,14 +19,18 @@ pipeline {
     disableConcurrentBuilds()
   }
 
-  parameters {
-    string(name: 'REGISTRY', defaultValue: 'harbor.omicrm.services',
-           description: 'Máy chủ Harbor, không kèm https://')
-    string(name: 'PROJECT', defaultValue: 'ci',
-           description: 'Project trong Harbor — ảnh là <REGISTRY>/<PROJECT>/vihat-miniapp')
-  }
-
+  // REGISTRY và PROJECT là HẰNG SỐ, không phải tham số của lượt chạy.
+  //
+  // Chúng từng là `parameters {}`, và hệ quả là mỗi lần bấm Build tay Jenkins đều hiện một form
+  // bắt điền lại — `defaultValue` chỉ tự áp khi build do SCM kích hoạt. Một cái form phải điền
+  // mỗi lượt để luôn điền đúng một giá trị là ma sát thuần tuý.
+  //
+  // Và với hệ thống hành chính còn hơn thế: registry chọn được lúc bấm nút nghĩa là câu "ảnh
+  // này nằm ở đâu" phụ thuộc vào thứ người bấm gõ vào ô nhập, một thứ không nằm trong kho mã và
+  // không ai xem lại được sau sáu tuần. Đổi registry là ĐỔI MÃ, đi qua commit và review.
   environment {
+    REGISTRY = 'harbor.omicrm.services'
+    PROJECT  = 'ci'
     DOCKER_BUILDKIT = '1'
     TEN_ANH = 'vihat-miniapp'
   }
@@ -136,7 +140,7 @@ pipeline {
     // the resource is denied", một dòng đọc như lỗi phân quyền chứ không như máy chưa đăng nhập.
     stage('Đóng ảnh') {
       steps {
-        script { env.ANH = "${params.REGISTRY}/${params.PROJECT}/${env.TEN_ANH}:${env.TAG}" }
+        script { env.ANH = "${env.REGISTRY}/${env.PROJECT}/${env.TEN_ANH}:${env.TAG}" }
 
         sh '''
           # --pull: lấy bản mới nhất của `golang:1.26-bookworm` và của ảnh nền runtime. Không có
