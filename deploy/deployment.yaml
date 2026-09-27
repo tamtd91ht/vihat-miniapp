@@ -1,6 +1,7 @@
 # vihat-miniapp — Deployment MẪU.
 #
-# Năm biến, năm dòng `env:` tường minh. CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
+# Chín biến, chín dòng `env:` tường minh (năm biến gốc + bốn biến tuỳ chọn của
+# bề mặt "yêu cầu", xem khối trong `env:`). CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
 # bẫy đằng sau nằm trong deploy/README.md mục "Vì sao env: tường minh". Đọc mục
 # ấy trước khi rút gọn tệp này.
 apiVersion: apps/v1
@@ -96,6 +97,42 @@ spec:
                   key: LISTEN_ADDR
                   # TUỲ CHỌN thật sự: config có mặc định ":8080". Đây là biến
                   # duy nhất trong năm biến được phép vắng mặt.
+                  optional: true
+            # =============================================================
+            #  BON BIEN TUY CHON — be mat "yeu cau" (migrations/0003).
+            #
+            #  `optional: true` o day KHONG phai cung mot y voi LISTEN_ADDR o
+            #  tren. LISTEN_ADDR vang mat thi config dung mac dinh; bon bien
+            #  duoi day vang mat thi TINH NANG TAT — service van Ready, van
+            #  nhan yeu cau tu van, chi la khong co tin xac nhan va tuyen goi
+            #  lai tra 503 kem mot cau noi nguoi dung goi hotline.
+            #
+            #  Dat `optional: false` cho chung la bien mot tinh nang phu thanh
+            #  dieu kien khoi dong cua ca dich vu.
+            # =============================================================
+            - name: ZALO_ZNS_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: ZALO_ZNS_ACCESS_TOKEN
+                  optional: true
+            - name: ZALO_ZNS_TEMPLATE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: ZALO_ZNS_TEMPLATE_ID
+                  optional: true
+            - name: TONGDAI_CALLBACK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: TONGDAI_CALLBACK_URL
+                  optional: true
+            - name: TONGDAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: TONGDAI_API_KEY
                   optional: true
 
           # ===================================================================

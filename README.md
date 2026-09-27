@@ -38,6 +38,9 @@ Xem mục **NỢ** cuối tệp trước khi phát hành.
 | **Lệnh gọi THẬT Zalo một lần** — đường thử cho NỢ #1-3 | `cmd/thu-zalo` |
 | **Mẫu k8s + bảng ánh xạ biến, CronJob dọn nhật ký hằng ngày** | `deploy/` |
 | **Cấu hình máy local**: `.env.local`, biến shell đè tệp | `scripts/voi-env.sh` |
+| **Yêu cầu tư vấn / gọi lại**: tuyến cần xác thực, hai trần, vết ZNS | `internal/yeucau`, `internal/httpapi/yeu_cau.go` |
+| **Lược đồ yêu cầu + lịch sử chỉ-ghi-thêm + hạn lưu 24 tháng** | `migrations/0003_yeu_cau.sql` |
+| Bộ điều hợp ZNS và tổng đài — **hình dạng dây CHƯA ĐO**, xem NỢ | `internal/zns`, `internal/tongdai` |
 
 ---
 
@@ -52,7 +55,32 @@ POST /api/v1/sessions          công khai, không cần xác thực
 
 GET  /healthz                  công khai, cho thăm dò sức khoẻ
   200: {"trang_thai": "ok"}        503 khi không chạm được CSDL
+
+POST /api/v1/requests          CẦN XÁC THỰC — Authorization: Bearer <token của /sessions>
+  gửi: {"kind": "consult" | "callback",
+        "interests": ["omicall", ...],   tối đa 8 mã, khuôn ^[a-z0-9][a-z0-9_-]{0,63}$
+        "scale": "<mã>", "source": "<mã chiến dịch>",
+        "note": "<tối đa 2000 KÝ TỰ>"}
+  201: {"requestId": "<uuid>", "kind": "...", "status": "moi", "createdAt": "<RFC3339>"}
+
+GET  /api/v1/requests          CẦN XÁC THỰC — CHỈ yêu cầu của chính người đăng nhập
+  200: {"items": [{"requestId", "kind", "status", "createdAt"}]}   rỗng là [], không phải null
 ```
+
+⚠ **Thân yêu cầu KHÔNG có, và sẽ không bao giờ có, một trường nói "tôi là ai".** Mã định danh
+đến từ phiên đăng nhập. `internal/httpapi/yeu_cau_test.go` có một ca nhồi đủ
+`nguoi_dung_id` / `userId` / `nguoiDungId` / `phone` vào thân và khẳng định cả bốn bị bỏ qua.
+
+⚠ **`status` trả về là MÃ, không phải câu chữ** (`moi` · `dang_xu_ly` · `da_lien_he` · `dong`).
+Câu tiếng Việt hiện cho người dùng sống ở Mini App: đổi một nhãn trên màn hình không được phép
+là một lần phát hành lại máy chủ.
+
+| Mã | Khi nào (tuyến `/requests`) | Câu trả về |
+|---|---|---|
+| 400 | thân không đọc được · `kind` lạ · mã sai khuôn · ghi chú quá 2000 ký tự | Yêu cầu / thông tin không hợp lệ… |
+| 401 | không có bearer, hoặc phiên đã hết hạn / bị thu hồi | Bạn cần đăng nhập để dùng chức năng này… |
+| 429 | vượt trần theo IP (20/5 phút) **hoặc** trần gọi lại (3 lượt/24 giờ/người) | hai câu khác nhau, xem `yeu_cau.go` |
+| 503 | `kind=callback` mà chưa cấu hình tổng đài, hoặc chưa gọi `VoiYeuCau` | Chức năng … đang tạm ngưng. Vui lòng gọi hotline… |
 
 Lỗi trả về `{"message": "<câu tiếng Việt nói người dùng làm gì tiếp>"}`.
 
@@ -492,13 +520,36 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
    hành, chứ không được bảo người dùng đăng nhập lại.
    → `make thu-zalo` in `error` và `message` **nguyên văn**: mỗi mã gặp được thì ghi một dòng
    vào đây, kèm việc nó là lỗi phía người dùng hay phía ta.
-4. **Xác nhận origin CORS thật** bằng DevTools trên thiết bị.
-5. **Proxy tin cậy** cho bộ giới hạn theo IP, trước khi đặt sau load balancer.
-6. **Bổ sung Chính sách riêng tư của app.** IP, thời điểm đăng nhập và kết quả từng lượt
+4. **Hình dạng dây của ZNS — CHƯA ĐO.** `internal/zns/client.go` viết từ nguồn **thứ cấp**:
+   `POST /message/template`, token ở header `access_token`, thành công là `error: 0`. Chưa một
+   lời gọi thật nào. Tính năng **tắt** chừng nào `ZALO_ZNS_ACCESS_TOKEN` + `ZALO_ZNS_TEMPLATE_ID`
+   còn trống, nên nợ này không thể lặng lẽ ra môi trường thật.
+   → Cần: một `template_id` **đã được Zalo duyệt**, có tham số `ma_yeu_cau`; gọi thật một lần;
+   đối chiếu tên trường; rồi mới điền hai biến.
+5. **Vòng đời access token của OA — CHƯA CÓ.** Token ZNS có hạn và phải làm mới bằng refresh
+   token; gói `zns` nhận một token **tĩnh** và không tự làm mới. Hết hạn thì yêu cầu vẫn ghi
+   nhận bình thường, chỉ tin xác nhận không tới — mỗi lượt để lại một dòng `that_bai` trong
+   `zns_da_gui`, nên nó **đếm được** và dựng cảnh báo được.
+   → Viết vòng làm mới sau khi nợ #4 xong; viết trước là viết mù.
+6. **Hình dạng dây của tổng đài — CHƯA ĐO.** `internal/tongdai/client.go` cố ý **không** mang
+   tên OmiCall: nó POST một thân tối giản `{phone, requestId}` tới một URL cấu hình được, kèm
+   `Authorization: Bearer`. Đó là thứ biết chắc; phần còn lại phải đo.
+   → Xác nhận hình dạng thật rồi sửa **đúng tệp ấy**. Đừng rải hình dạng mới ra tầng khác.
+7. **CronJob ẩn danh hoá yêu cầu quá 24 tháng — CHƯA CÓ.** `migrations/0003` có hàm
+   `an_danh_yeu_cau_qua_han()` nhưng **không có gì gọi nó**. Một hàm dọn không ai gọi là một
+   hàm làm người đọc lược đồ tin rằng dữ liệu đang được dọn.
+   → Thêm một CronJob hằng ngày, cùng khuôn `deploy/cronjob-don-nhat-ky.yaml`.
+8. **Chính sách riêng tư phải khai thêm dữ liệu bán hàng.** Từ `0003` máy chủ lưu thêm: sản
+   phẩm quan tâm, quy mô, **ô ghi chú tự do**, mã chiến dịch, và vết từng tin ZNS đã gửi. Văn
+   bản hiện hành chỉ khai số điện thoại và nhật ký đăng nhập.
+   → Đây là một thay đổi **pháp lý**, không phải một dòng tài liệu: nó đi kèm hồ sơ duyệt Zalo.
+9. **Xác nhận origin CORS thật** bằng DevTools trên thiết bị.
+10. **Proxy tin cậy** cho bộ giới hạn theo IP, trước khi đặt sau load balancer.
+11. **Bổ sung Chính sách riêng tư của app.** IP, thời điểm đăng nhập và kết quả từng lượt
    đăng nhập đang được lưu, trong khi văn bản hiện chỉ khai số điện thoại — xem bảng
    "Máy chủ thực sự lưu những gì". Văn bản ấy đi kèm hồ sơ duyệt Zalo, khai thiếu là vi phạm
    chính Nghị định 13.
-7. ~~Thời hạn lưu nhật ký~~ — **ĐÃ CHỐT: chậm nhất 90 ngày** (thực tế 83–90), cưỡng chế bằng
+12. ~~Thời hạn lưu nhật ký~~ — **ĐÃ CHỐT: chậm nhất 90 ngày** (thực tế 83–90), cưỡng chế bằng
    `make don-nhat-ky`. ~~Việc còn lại là cắm nó vào cron HẰNG NGÀY~~ — **ĐÃ CÓ:
    `deploy/cronjob-don-nhat-ky.yaml`**, chạy `15 3 * * *` **hằng ngày**, `concurrencyPolicy:
    Forbid`, chạy bù trong một giờ nếu lỡ cửa sổ.

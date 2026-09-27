@@ -31,6 +31,15 @@ var banKe = []struct {
 	{EnvZaloAppID, false, true, "configmap.example.yaml"},
 	{EnvCORSAllowedOrigins, false, true, "configmap.example.yaml"},
 	{EnvListenAddr, false, true, "configmap.example.yaml"},
+	// Bốn biến TUỲ CHỌN của bề mặt "yêu cầu" (0003). Chúng vẫn phải có đủ ba
+	// nơi: "tuỳ chọn" nói về việc thiếu nó thì service có khởi động được không,
+	// KHÔNG nói về việc người vận hành có tra ra được nó không. Một biến bật
+	// được một tính năng mà không nằm trong bản kê là một tính năng không ai
+	// biết cách bật — và là tính năng sẽ bị viết lại lần thứ hai.
+	{EnvZNSAccessToken, true, true, "secret.example.yaml"},
+	{EnvZNSTemplateID, false, true, "configmap.example.yaml"},
+	{EnvTongDaiCallbackURL, false, true, "configmap.example.yaml"},
+	{EnvTongDaiAPIKey, true, true, "secret.example.yaml"},
 	// Chỉ dùng cho `go test ./internal/store`. Không bao giờ lên cụm: một CSDL
 	// test khai báo trong môi trường sản xuất là một CSDL test sẽ bị ai đó ghi vào.
 	{"TEST_DATABASE_DSN", false, false, ""},

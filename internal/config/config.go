@@ -36,6 +36,31 @@ type Config struct {
 	// CORSAllowedOrigins: danh sách trắng tuyệt đối. Rỗng là không hợp lệ,
 	// "*" là không hợp lệ. Xem internal/httpapi/cors.go.
 	CORSAllowedOrigins []string
+
+	// ---------------------------------------------------------------------
+	// BỐN BIẾN CỦA BỀ MẶT "YÊU CẦU" (0003) — CẢ BỐN ĐỀU TUỲ CHỌN, CÓ CHỦ ĐÍCH.
+	//
+	// Chúng bật hai tính năng phụ thuộc bên thứ ba: tin ZNS xác nhận, và lệnh
+	// gọi lại từ tổng đài. Thiếu một nhóm thì NHÓM ẤY TẮT, service vẫn khởi
+	// động và vẫn nhận yêu cầu tư vấn bình thường.
+	//
+	// VÌ SAO KHÔNG BẮT BUỘC: "bắt buộc" nghĩa là service không phục vụ nổi một
+	// yêu cầu nào nếu thiếu (xem DATABASE_DSN). Thiếu mẫu ZNS thì người dùng
+	// vẫn gửi được yêu cầu và ViHAT vẫn nhận được — chỉ là không có tin xác
+	// nhận. Đặt nó thành bắt buộc là để một tính năng phụ chặn cả dịch vụ.
+	//
+	// ⚠ NHÓM, KHÔNG PHẢI TỪNG BIẾN: một nửa cấu hình (có token, thiếu mẫu) là
+	// tắt, không phải nửa bật. Cưỡng chế trong zns.Moi / tongdai.Moi — cả hai
+	// trả nil khi thiếu bất kỳ mảnh nào.
+	// ---------------------------------------------------------------------
+
+	// ZNS: tin xác nhận gửi từ OA của ViHAT sau khi nhận một yêu cầu.
+	ZNSAccessToken secret.Secret
+	ZNSTemplateID  string
+
+	// Tổng đài: đích nhận lệnh quay số ra cho tính năng "gọi lại".
+	TongDaiCallbackURL string
+	TongDaiAPIKey      secret.Secret
 }
 
 const (
@@ -44,6 +69,15 @@ const (
 	EnvZaloAppID          = "ZALO_MINIAPP_APP_ID"
 	EnvZaloSecretKey      = "ZALO_MINIAPP_SECRET_KEY"
 	EnvCORSAllowedOrigins = "CORS_ALLOWED_ORIGINS"
+
+	// Bốn biến tuỳ chọn của bề mặt "yêu cầu" (0003). Tên mang tiền tố theo BÊN
+	// CUNG CẤP (`ZALO_ZNS_`, `TONGDAI_`) chứ không theo tính năng, vì đó là thứ
+	// người vận hành đi tìm: họ cầm trong tay một khoá của Zalo hoặc một khoá
+	// của tổng đài, không cầm một "tính năng".
+	EnvZNSAccessToken     = "ZALO_ZNS_ACCESS_TOKEN"
+	EnvZNSTemplateID      = "ZALO_ZNS_TEMPLATE_ID"
+	EnvTongDaiCallbackURL = "TONGDAI_CALLBACK_URL"
+	EnvTongDaiAPIKey      = "TONGDAI_API_KEY"
 
 	listenAddrMacDinh = ":8080"
 )
@@ -91,6 +125,17 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 		}
 		cfg.CORSAllowedOrigins = origins
 	}
+
+	// Bốn biến TUỲ CHỌN — không vào `thieu`, và đó là cả khác biệt: thiếu chúng
+	// thì tính năng tắt, không phải service chết. Xem khối chú thích ở Config.
+	tuyChon := func(ten string) string {
+		v, _ := look(ten)
+		return strings.TrimSpace(v)
+	}
+	cfg.ZNSAccessToken = secret.Secret(tuyChon(EnvZNSAccessToken))
+	cfg.ZNSTemplateID = tuyChon(EnvZNSTemplateID)
+	cfg.TongDaiCallbackURL = tuyChon(EnvTongDaiCallbackURL)
+	cfg.TongDaiAPIKey = secret.Secret(tuyChon(EnvTongDaiAPIKey))
 
 	if len(thieu) > 0 {
 		loi = append(loi, "thiếu biến bắt buộc: "+strings.Join(thieu, ", "))

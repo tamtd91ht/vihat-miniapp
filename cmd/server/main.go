@@ -18,7 +18,10 @@ import (
 	"github.com/vihat/vihat-miniapp/internal/config"
 	"github.com/vihat/vihat-miniapp/internal/httpapi"
 	"github.com/vihat/vihat-miniapp/internal/store"
+	"github.com/vihat/vihat-miniapp/internal/tongdai"
+	"github.com/vihat/vihat-miniapp/internal/yeucau"
 	"github.com/vihat/vihat-miniapp/internal/zalo"
+	"github.com/vihat/vihat-miniapp/internal/zns"
 )
 
 const (
@@ -66,7 +69,39 @@ func chay(log *slog.Logger) error {
 	}
 	defer kho.Dong()
 
-	api := httpapi.Moi(kho, zalo.New("", cfg.ZaloSecretKey), cfg, log)
+	// Hai bộ điều hợp của bên thứ ba. CẢ HAI ĐƯỢC PHÉP nil — `Moi` của chúng trả
+	// nil khi thiếu cấu hình, và `yeucau.DichVu` tắt đúng tính năng tương ứng.
+	// Thiếu mẫu ZNS không được chặn một yêu cầu tư vấn; thiếu tổng đài không
+	// được chặn cả dịch vụ.
+	boGuiZNS := zns.Moi("", cfg.ZNSAccessToken, cfg.ZNSTemplateID)
+	congTongDai := tongdai.Moi(cfg.TongDaiCallbackURL, cfg.TongDaiAPIKey)
+
+	// In ra TRẠNG THÁI BẬT/TẮT, không in giá trị. Người vận hành mở log lúc khởi
+	// động là biết ngay hai tính năng ấy có sống hay không — thay vì phát hiện
+	// ra từ một người dùng nói "tôi không nhận được tin nhắn nào".
+	log.Info("bề mặt yêu cầu",
+		"zns", boGuiZNS != nil,
+		"tong_dai", congTongDai != nil,
+		"tran_goi_lai", yeucau.TranGoiLai,
+		"cua_so_goi_lai", yeucau.CuaSoGoiLai.String())
+
+	// ⚠ nil-INTERFACE LÀ MỘT CÁI BẪY CÓ THẬT Ở ĐÚNG CHỖ NÀY, và sáu dòng dưới
+	// tồn tại vì nó: gán một con trỏ nil vào một tham số kiểu GIAO DIỆN cho ra
+	// một giao diện KHÁC nil (nó mang kiểu, chỉ giá trị bên trong là nil). Khi
+	// ấy `d.zns == nil` trong `yeucau` là false, tính năng lẽ ra "tắt" lại chạy,
+	// và nó hỏng ở lời gọi đầu tiên bằng một nil pointer dereference — giữa một
+	// tuyến đang phục vụ một người dùng thật.
+	var guiZNS yeucau.BoGuiZNS
+	if boGuiZNS != nil {
+		guiZNS = boGuiZNS
+	}
+	var goiRa yeucau.TongDai
+	if congTongDai != nil {
+		goiRa = congTongDai
+	}
+
+	api := httpapi.Moi(kho, zalo.New("", cfg.ZaloSecretKey), cfg, log).
+		VoiYeuCau(kho, yeucau.Moi(kho, goiRa, guiZNS, log))
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,

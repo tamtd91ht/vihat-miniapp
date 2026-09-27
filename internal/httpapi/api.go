@@ -18,6 +18,7 @@ import (
 
 	"github.com/vihat/vihat-miniapp/internal/config"
 	"github.com/vihat/vihat-miniapp/internal/phien"
+	"github.com/vihat/vihat-miniapp/internal/yeucau"
 )
 
 // Kho là phần kho dữ liệu mà tầng HTTP cần. Cố ý hẹp: tầng này không được phép
@@ -52,6 +53,12 @@ type Server struct {
 	log     *slog.Logger
 	ttl     time.Duration
 	now     func() time.Time
+
+	// Ba trường của bề mặt "yêu cầu" — xem `VoiYeuCau`. Cả ba ĐƯỢC PHÉP nil, và
+	// `Handler` vẫn gắn tuyến trong ca ấy; xem chú thích ở đó.
+	khoPhien      KhoPhien
+	yeuCau        *yeucau.DichVu
+	gioiHanYeuCau *GioiHanIP
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -69,7 +76,20 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 	}
 }
 
-// Handler dựng bộ định tuyến. Ba tuyến, cả ba CÔNG KHAI và nói rõ vì sao:
+// VoiYeuCau nối bề mặt "người dùng giơ tay" vào máy chủ.
+//
+// TÁCH KHỎI `Moi` CHỨ KHÔNG THÊM HAI THAM SỐ NỮA, vì hai lý do độc lập: bề mặt
+// phiên đăng nhập phải test được mà không phải dựng cả tầng yêu cầu
+// (`sessions_test.go` gọi `Moi` trần), và một hàm dựng sáu tham số là hàm mà lần
+// thêm thứ bảy sẽ truyền nhầm thứ tự.
+func (s *Server) VoiYeuCau(khoPhien KhoPhien, dv *yeucau.DichVu) *Server {
+	s.khoPhien = khoPhien
+	s.yeuCau = dv
+	s.gioiHanYeuCau = MoiGioiHan(SoLuotYeuCauToiDa, CuaSoYeuCau)
+	return s
+}
+
+// Handler dựng bộ định tuyến. Ba tuyến CÔNG KHAI và một tuyến CẦN XÁC THỰC:
 //
 //	POST /api/v1/sessions — công khai vì đây CHÍNH LÀ tuyến đăng nhập: người gọi
 //	                        chưa có gì để xác thực. Thứ bảo vệ nó là token của
@@ -80,12 +100,48 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 //	                        phiên nào. Hôm nay nó không đọc và không lưu gì, và
 //	                        đó là điều kiện để "không kiểm chứng" còn chấp nhận
 //	                        được — xem webhook_zalo.go.
+//
+//	/api/v1/requests      — CẦN XÁC THỰC. POST tạo một yêu cầu, GET đọc yêu cầu
+//	                        CỦA CHÍNH MÌNH. Bọc bởi `doiPhien`, và hai lớp giới
+//	                        hạn: theo IP ở đây, theo NGƯỜI ở internal/yeucau.
+//
+// ⚠ TUYẾN `/api/v1/requests` LUÔN ĐƯỢC GẮN, KỂ CẢ KHI `VoiYeuCau` CHƯA ĐƯỢC GỌI.
+//
+//	Gắn có điều kiện thì một lần lắp ráp thiếu ở `cmd/server` biến thành 404, và
+//	404 trên một tuyến ĐÚNG là thứ phía Mini App sẽ đọc thành "mình gọi sai
+//	đường dẫn" — rồi đi sửa đúng chỗ không hỏng. Gắn luôn thì cùng lỗi ấy hiện
+//	ra thành 503 kèm một câu tiếng Việt nói chức năng tạm ngưng: đúng triệu
+//	chứng, đúng phía.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/sessions", s.taoPhien)
+	mux.HandleFunc("/api/v1/requests", s.gacYeuCau(s.requests))
 	mux.HandleFunc("/healthz", s.healthz)
 	s.mountWebhookZalo(mux)
 	return s.cors.boc(mux)
+}
+
+const loiChuaLapRap = "Chức năng này đang tạm ngưng. Vui lòng gọi hotline để được hỗ trợ ngay."
+
+// gacYeuCau đặt hai thứ trước mọi tuyến của bề mặt yêu cầu: giới hạn theo IP,
+// rồi xác thực phiên. Thứ tự KHÔNG đổi được — kiểm phiên trước nghĩa là một
+// máy quét làm ta tra CSDL mỗi lượt nó gõ cửa.
+func (s *Server) gacYeuCau(tiep http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.yeuCau == nil || s.khoPhien == nil || s.gioiHanYeuCau == nil {
+			s.log.Error("tuyến yêu cầu chưa được lắp ráp — thiếu VoiYeuCau ở cmd/server")
+			s.traLoi(w, http.StatusServiceUnavailable, loiChuaLapRap)
+			return
+		}
+		if choPhep, _ := s.gioiHanYeuCau.Cho(khoaGioiHan(ipCuaKhach(r))); !choPhep {
+			// KHÔNG ghi vào `nhat_ky_dang_nhap`: bảng ấy là nhật ký ĐĂNG NHẬP, và
+			// nhét một sự kiện khác loại vào nó làm hỏng chính con số mà cảnh báo
+			// đăng nhập đang đếm. Một dòng log là đủ cho lớp chặn theo IP.
+			s.traLoi(w, http.StatusTooManyRequests, loiQuaNhieuLan)
+			return
+		}
+		s.doiPhien(tiep)(w, r)
+	}
 }
 
 // ---------------------------------------------------------------------------

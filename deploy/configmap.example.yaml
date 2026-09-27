@@ -34,3 +34,17 @@ data:
   # không có ai nghe, pod không bao giờ Ready, và triệu chứng trông như "service
   # chết" chứ không như "sai cổng".
   LISTEN_ADDR: ":8080"
+
+  # ---------------------------------------------------------------------
+  # HAI KHOÁ TUỲ CHỌN — bề mặt "yêu cầu" (migrations/0003).
+  # Thiếu thì tính năng tương ứng TẮT, service vẫn Ready. Khối `env:` trong
+  # deployment.yaml khai chúng với `optional: true` — đó là thứ giữ cho pod
+  # khởi động được khi ConfigMap chưa có hai khoá này.
+  # ---------------------------------------------------------------------
+
+  # Mã mẫu ZNS ĐÃ ĐƯỢC ZALO DUYỆT. Mẫu phải có tham số `ma_yeu_cau`.
+  ZALO_ZNS_TEMPLATE_ID: "<dien-vao-ma-mau-zns-da-duyet>"
+
+  # Đích nhận lệnh quay số ra cho tính năng "gọi lại".
+  # ⚠ Hình dạng dây CHƯA ĐO — đọc internal/tongdai/client.go trước khi điền.
+  TONGDAI_CALLBACK_URL: "<dien-vao-url-cong-kich-cuoc-goi>"
