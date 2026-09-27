@@ -149,21 +149,32 @@ func TestMoPhien_DocPhanHoi(t *testing.T) {
 	m := &mayChuGia{traVe: &identityv1.OpenCitizenSessionResponse{
 		SessionToken: "tok-gia", SessionId: "sid-gia", ExpiresAt: timestamppb.New(het),
 		TenantId: "01J0000000000000000000000A", TenantDisplayName: "Xã A", PhoneVerified: true,
+		CommunePrimaryHost: "xa-a.vigov.vn",
 	}}
 	kq, err := dungCau(t, m).MoPhien(context.Background(), yeuCauMau())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if kq.Token != "tok-gia" || kq.PhienID != "sid-gia" || !kq.HetHan.Equal(het) ||
-		kq.TenXa != "Xã A" || !kq.DaXacThucSo {
+		kq.TenXa != "Xã A" || !kq.DaXacThucSo || kq.TenMienChinh != "xa-a.vigov.vn" {
 		t.Errorf("kết quả = %+v", kq)
 	}
 
-	// Phiên không xã: hợp đồng không có token, không có hạn.
+	// Phiên không xã: hợp đồng không có token, không có hạn, không tên miền.
 	m2 := &mayChuGia{traVe: &identityv1.OpenCitizenSessionResponse{SessionId: "sid-2"}}
 	kq, err = dungCau(t, m2).MoPhien(context.Background(), yeuCauMau())
-	if err != nil || kq.Token != "" || !kq.HetHan.IsZero() || kq.TenXa != "" {
+	if err != nil || kq.Token != "" || !kq.HetHan.IsZero() || kq.TenXa != "" || kq.TenMienChinh != "" {
 		t.Errorf("phiên không xã = %+v, err=%v", kq, err)
+	}
+
+	// Có xã mà xã chưa có tên miền chính: "" nguyên văn, không bịa từ tên miền
+	// client gửi (hợp đồng, trường 8).
+	m3 := &mayChuGia{traVe: &identityv1.OpenCitizenSessionResponse{
+		SessionToken: "tok-3", SessionId: "sid-3", TenantId: "01J0000000000000000000000A", TenantDisplayName: "Xã A",
+	}}
+	kq, err = dungCau(t, m3).MoPhien(context.Background(), yeuCauMau())
+	if err != nil || kq.TenXa != "Xã A" || kq.TenMienChinh != "" {
+		t.Errorf("xã không tên miền chính = %+v, err=%v", kq, err)
 	}
 }
 

@@ -23,6 +23,10 @@ const (
 	appIDGia      = "1234567890"
 )
 
+// thanCauHopLe — thân đi CẦU: có communeHostHint (công dân vừa xác nhận xã).
+// Không có tên miền thì cầu bật cũng đi phiên thương mại — xem sessions.go.
+const thanCauHopLe = `{"accessToken":"at-gia-lap","phoneToken":"pt-gia-lap","communeHostHint":"xa-a.vigov.vn","communeConfirmed":true}`
+
 type cauGia struct {
 	nhan []vigovcau.YeuCau
 	kq   vigovcau.KetQua
@@ -143,7 +147,7 @@ func TestPhienViGov_201_KhongPhoneToken_KhongCoTruongSo(t *testing.T) {
 func TestPhienViGov_201_CoPhoneToken_SoDiSangViGovMaKhongRo(t *testing.T) {
 	b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, &maZaloGia{ma: maTaiKhoanGia})
 
-	w := goiDangNhap(t, b.s, thanHopLe)
+	w := goiDangNhap(t, b.s, thanCauHopLe)
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("mã = %d; thân = %s", w.Code, w.Body.String())
@@ -173,7 +177,8 @@ func TestPhienViGov_TenMienDiNguyenVan(t *testing.T) {
 // Phiên không xã: hợp đồng không có token — thân không được bịa token hay hạn.
 func TestPhienViGov_KhongXaThiKhongToken(t *testing.T) {
 	b := dungServerCau(t, &cauGia{kq: vigovcau.KetQua{PhienID: "sid"}}, &maZaloGia{ma: maTaiKhoanGia})
-	w := goiDangNhap(t, b.s, `{"accessToken":"at"}`)
+	// Có tên miền nhưng CHƯA xác nhận: app chính theo xã đã nhớ, ở đây là không xã.
+	w := goiDangNhap(t, b.s, `{"accessToken":"at","communeHostHint":"xa-a.vigov.vn"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("mã = %d", w.Code)
 	}
@@ -183,6 +188,103 @@ func TestPhienViGov_KhongXaThiKhongToken(t *testing.T) {
 	}
 	if !strings.Contains(than, `"tenantDisplayName":""`) {
 		t.Errorf("thiếu tenantDisplayName rỗng: %s", than)
+	}
+	if !strings.Contains(than, `"communePrimaryHost":""`) {
+		t.Errorf("thiếu communePrimaryHost rỗng: %s", than)
+	}
+}
+
+// communePrimaryHost: có thì đi NGUYÊN VĂN; rỗng thì "" — không bao giờ lấy
+// tên miền client gửi (communeHostHint) để điền thay.
+func TestPhienViGov_TenMienChinh(t *testing.T) {
+	t.Run("có", func(t *testing.T) {
+		kq := ketQuaCoXa()
+		kq.TenMienChinh = "xa-b.vigov.vn" // khác hint: xã kế thừa sau sáp nhập
+		b := dungServerCau(t, &cauGia{kq: kq}, &maZaloGia{ma: maTaiKhoanGia})
+		w := goiDangNhap(t, b.s, thanCauHopLe)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("mã = %d; thân = %s", w.Code, w.Body.String())
+		}
+		var ra phanHoiPhienViGov
+		if err := json.Unmarshal(w.Body.Bytes(), &ra); err != nil {
+			t.Fatal(err)
+		}
+		if ra.VigovSession.CommunePrimaryHost != "xa-b.vigov.vn" {
+			t.Errorf("communePrimaryHost = %q, mong nguyên văn ViGov trả", ra.VigovSession.CommunePrimaryHost)
+		}
+	})
+	t.Run("rỗng", func(t *testing.T) {
+		b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, &maZaloGia{ma: maTaiKhoanGia})
+		w := goiDangNhap(t, b.s, thanCauHopLe)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("mã = %d; thân = %s", w.Code, w.Body.String())
+		}
+		if than := w.Body.String(); !strings.Contains(than, `"communePrimaryHost":""`) {
+			t.Errorf("ViGov trả rỗng mà thân không mang \"\" (hoặc bị điền thay): %s", than)
+		}
+	})
+}
+
+// CHỌN NHÁNH THEO YÊU CẦU (27/09/2026): cầu bật, KHÔNG tên miền -> phiên thương
+// mại, cùng hình dạng thân như cầu tắt. Đây là đường của Tư vấn / Yêu cầu của tôi.
+func TestPhienViGov_CauBatKhongTenMienThiPhienThuongMai(t *testing.T) {
+	for _, than := range []string{
+		thanHopLe,
+		// communeConfirmed không có tên miền: không đủ để đi cầu.
+		`{"accessToken":"at-gia-lap","phoneToken":"pt-gia-lap","communeConfirmed":true}`,
+		`{"accessToken":"at-gia-lap","phoneToken":"pt-gia-lap","communeHostHint":""}`,
+	} {
+		b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, &maZaloGia{ma: maTaiKhoanGia})
+		w := goiDangNhap(t, b.s, than)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("%s: mã = %d; thân = %s", than, w.Code, w.Body.String())
+		}
+		var ph map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &ph); err != nil {
+			t.Fatal(err)
+		}
+		if _, co := ph["token"]; !co {
+			t.Errorf("%s: thân thiếu `token` gốc — phần thương mại mất phiên", than)
+		}
+		if _, co := ph["expiresAt"]; !co {
+			t.Errorf("%s: thân thiếu `expiresAt`", than)
+		}
+		if _, co := ph["vigovSession"]; co || len(ph) != 2 {
+			t.Errorf("%s: thân khác hình dạng cũ: %s", than, w.Body.String())
+		}
+		if len(b.cau.nhan) != 0 || b.ma.goi != 0 {
+			t.Errorf("%s: không tên miền mà vẫn đi cầu", than)
+		}
+		if b.kho.soLanTao != 1 {
+			t.Errorf("%s: không phát phiên của kho này", than)
+		}
+	}
+	// Thiếu phoneToken: như phiên thương mại cũ, 400 — không lẳng lặng đi cầu.
+	b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, &maZaloGia{ma: maTaiKhoanGia})
+	if w := goiDangNhap(t, b.s, `{"accessToken":"at"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("cầu bật, không tên miền, thiếu phoneToken: mã = %d, mong 400", w.Code)
+	}
+	if len(b.cau.nhan) != 0 {
+		t.Error("thiếu phoneToken mà rơi sang cầu")
+	}
+}
+
+// Tên miền sai khuôn vẫn đi cầu như trước (so khác rỗng NGUYÊN VĂN, không trim):
+// ViGov từ chối INVALID_ARGUMENT -> 400, không lùi về phiên thương mại.
+func TestPhienViGov_TenMienSaiKhuonVanDiCau(t *testing.T) {
+	for _, hint := range []string{"   ", "https://xa-a.vigov.vn:443/x", "XA-A.VIGOV.VN"} {
+		b := dungServerCau(t, &cauGia{loi: vigovcau.ErrYeuCauSai}, &maZaloGia{ma: maTaiKhoanGia})
+		than, _ := json.Marshal(map[string]any{"accessToken": "at", "communeHostHint": hint, "communeConfirmed": true})
+		w := goiDangNhap(t, b.s, string(than))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%q: mã = %d, mong 400", hint, w.Code)
+		}
+		if len(b.cau.nhan) != 1 || b.cau.nhan[0].TenMienXa != hint {
+			t.Errorf("%q: không đi cầu nguyên văn", hint)
+		}
+		if b.kho.soLanTao != 0 {
+			t.Errorf("%q: cầu từ chối mà lùi về phiên thương mại", hint)
+		}
 	}
 }
 
@@ -201,7 +303,7 @@ func TestPhienViGov_MaLoiCau(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.lyDo+"/"+c.loi.Error(), func(t *testing.T) {
 			b := dungServerCau(t, &cauGia{loi: c.loi}, &maZaloGia{ma: maTaiKhoanGia})
-			w := goiDangNhap(t, b.s, thanHopLe)
+			w := goiDangNhap(t, b.s, thanCauHopLe)
 			if w.Code != c.ma {
 				t.Fatalf("mã = %d, mong %d", w.Code, c.ma)
 			}
@@ -231,7 +333,7 @@ func TestPhienViGov_503_KhiMaTaiKhoanChuaDo(t *testing.T) {
 	b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, nil)
 	b.s.VoiCauPhienViGov(b.cau, zalo.MaTaiKhoanChuaDo{}, appIDGia)
 
-	w := goiDangNhap(t, b.s, thanHopLe)
+	w := goiDangNhap(t, b.s, thanCauHopLe)
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("mã = %d, mong 503", w.Code)
@@ -250,7 +352,7 @@ func TestPhienViGov_503_KhiMaTaiKhoanChuaDo(t *testing.T) {
 func TestPhienViGov_LoiZalo(t *testing.T) {
 	t.Run("token hỏng ở bước mã tài khoản -> 401", func(t *testing.T) {
 		b := dungServerCau(t, &cauGia{}, &maZaloGia{loi: zalo.ErrTokenKhongHopLe})
-		if w := goiDangNhap(t, b.s, thanHopLe); w.Code != http.StatusUnauthorized {
+		if w := goiDangNhap(t, b.s, thanCauHopLe); w.Code != http.StatusUnauthorized {
 			t.Fatalf("mã = %d, mong 401", w.Code)
 		}
 		if len(b.cau.nhan) != 0 {
@@ -259,7 +361,7 @@ func TestPhienViGov_LoiZalo(t *testing.T) {
 	})
 	t.Run("mã tài khoản rỗng -> 502, không gửi mã rỗng", func(t *testing.T) {
 		b := dungServerCau(t, &cauGia{}, &maZaloGia{ma: ""})
-		if w := goiDangNhap(t, b.s, thanHopLe); w.Code != http.StatusBadGateway {
+		if w := goiDangNhap(t, b.s, thanCauHopLe); w.Code != http.StatusBadGateway {
 			t.Fatalf("mã = %d, mong 502", w.Code)
 		}
 		if len(b.cau.nhan) != 0 {
@@ -269,7 +371,7 @@ func TestPhienViGov_LoiZalo(t *testing.T) {
 	t.Run("đổi số hỏng -> 401, không gọi cầu", func(t *testing.T) {
 		b := dungServerCau(t, &cauGia{}, &maZaloGia{ma: maTaiKhoanGia})
 		b.z.loi = zalo.ErrTokenKhongHopLe
-		if w := goiDangNhap(t, b.s, thanHopLe); w.Code != http.StatusUnauthorized {
+		if w := goiDangNhap(t, b.s, thanCauHopLe); w.Code != http.StatusUnauthorized {
 			t.Fatalf("mã = %d, mong 401", w.Code)
 		}
 		if len(b.cau.nhan) != 0 {
@@ -279,7 +381,11 @@ func TestPhienViGov_LoiZalo(t *testing.T) {
 }
 
 func TestPhienViGov_400_ThieuAccessToken(t *testing.T) {
-	for _, than := range []string{`{}`, `{"phoneToken":"pt"}`, `khong-phai-json`} {
+	for _, than := range []string{
+		`{}`, `{"phoneToken":"pt"}`, `khong-phai-json`,
+		`{"communeHostHint":"xa-a.vigov.vn"}`,
+		`{"phoneToken":"pt","communeHostHint":"xa-a.vigov.vn","communeConfirmed":true}`,
+	} {
 		b := dungServerCau(t, &cauGia{}, &maZaloGia{ma: maTaiKhoanGia})
 		if w := goiDangNhap(t, b.s, than); w.Code != http.StatusBadRequest {
 			t.Fatalf("%s: mã = %d, mong 400", than, w.Code)

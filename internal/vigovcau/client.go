@@ -81,6 +81,11 @@ type KetQua struct {
 	HetHan      time.Time // zero khi không có token
 	TenXa       string    // "" đúng khi không xã
 	DaXacThucSo bool
+	// TenMienChinh — tên miền CHÍNH của xã lúc phát phiên (hợp đồng, trường 8).
+	// "" khi không xã, hoặc xã chưa có tên miền chính. Chỉ để Mini App gọi các
+	// tuyến công khai theo xã; KHÔNG phải mã xã, kho này không lưu và không diễn
+	// giải. Không phải dữ liệu cá nhân.
+	TenMienChinh string
 }
 
 // Client gọi cầu phiên. An toàn cho nhiều goroutine.
@@ -169,10 +174,11 @@ func (c *Client) MoPhien(ctx context.Context, yc YeuCau) (KetQua, error) {
 	}
 
 	kq := KetQua{
-		Token:       ph.GetSessionToken(),
-		PhienID:     ph.GetSessionId(),
-		TenXa:       ph.GetTenantDisplayName(),
-		DaXacThucSo: ph.GetPhoneVerified(),
+		Token:        ph.GetSessionToken(),
+		PhienID:      ph.GetSessionId(),
+		TenXa:        ph.GetTenantDisplayName(),
+		DaXacThucSo:  ph.GetPhoneVerified(),
+		TenMienChinh: ph.GetCommunePrimaryHost(),
 	}
 	if ph.GetExpiresAt() != nil {
 		kq.HetHan = ph.GetExpiresAt().AsTime()

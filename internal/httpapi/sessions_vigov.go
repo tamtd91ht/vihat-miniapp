@@ -11,7 +11,10 @@ import (
 	"github.com/vihat/vihat-miniapp/internal/zalo"
 )
 
-// taoPhienViGov — nhánh của POST /api/v1/sessions khi cầu phiên ViGov BẬT.
+// taoPhienViGov — nhánh của POST /api/v1/sessions khi cầu phiên ViGov BẬT VÀ
+// thân mang communeHostHint khác rỗng (chọn nhánh: sessions.go). Không mang nó
+// thì cầu bật vẫn phát phiên thương mại — nên "app mở âm thầm" ở điểm 1 dưới
+// đây hôm nay KHÔNG tới được nhánh này.
 //
 // Kho này xác minh token Zalo bằng secret của app, rồi gọi cầu phiên của ViGov
 // (ADR 0045 bước 3–8) và chuyển NGUYÊN token phiên ViGov cho Mini App.
@@ -114,9 +117,10 @@ func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCau
 		"co_xa", kq.TenXa != "", "da_xac_thuc_so", kq.DaXacThucSo, "gui_so", so != "")
 
 	ph := phienViGov{
-		Token:             kq.Token,
-		TenantDisplayName: kq.TenXa,
-		PhoneVerified:     kq.DaXacThucSo,
+		Token:              kq.Token,
+		TenantDisplayName:  kq.TenXa,
+		PhoneVerified:      kq.DaXacThucSo,
+		CommunePrimaryHost: kq.TenMienChinh,
 	}
 	if !kq.HetHan.IsZero() {
 		ph.ExpiresAt = kq.HetHan.UTC().Format(time.RFC3339)
@@ -167,11 +171,19 @@ type phanHoiPhienViGov struct {
 // "" là một câu trả lời thật ("không xã nào"), không bao giờ thay bằng xã khác.
 // Không có tenant_id: xã của công dân đến TỪ PHIÊN ở phía ViGov, client không
 // cần và không được cầm mã xã.
+//
+// communePrimaryHost LUÔN CÓ MẶT, "" khi ViGov trả rỗng (không xã, hoặc xã chưa
+// có tên miền chính) — cùng cách với tenantDisplayName: "" là một câu trả lời
+// thật, và Mini App khi đó bỏ qua các tuyến công khai theo xã. Kho này không
+// bao giờ điền thay (không lấy communeHostHint, không dựng từ tên xã). Nó là
+// khoá tra cứu cho `?host=`, KHÔNG phải mã xã: client không được lưu nó làm
+// "xã của tôi" (hợp đồng, trường 8). Không phải dữ liệu cá nhân.
 type phienViGov struct {
-	Token             string `json:"token,omitempty"`
-	ExpiresAt         string `json:"expiresAt,omitempty"`
-	TenantDisplayName string `json:"tenantDisplayName"`
-	PhoneVerified     bool   `json:"phoneVerified"`
+	Token              string `json:"token,omitempty"`
+	ExpiresAt          string `json:"expiresAt,omitempty"`
+	TenantDisplayName  string `json:"tenantDisplayName"`
+	PhoneVerified      bool   `json:"phoneVerified"`
+	CommunePrimaryHost string `json:"communePrimaryHost"`
 }
 
 const (

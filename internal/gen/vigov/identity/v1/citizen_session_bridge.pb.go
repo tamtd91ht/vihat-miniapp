@@ -2,9 +2,9 @@
 //  BẢN CHÉP — KHÔNG SỬA TAY. Hợp đồng này thuộc ViGov (bên phục vụ), không thuộc kho này.
 //
 //  Nguồn:   vigov-v2, proto/vigov/identity/v1/citizen_session_bridge.proto
-//  Commit:  39d43979afc5c475d857eb4d777fb414b95d2524 (39d4397)
+//  Commit:  92e0c779d4c0dd3f407b0114f752687194ce11b4 (92e0c77)
 //  SHA-256 của phần thân (mọi byte SAU dòng "HẾT ĐẦU TỆP" bên dưới):
-//           61f4462db8e9e4594b905883c07e2a51d93f765f07b2841416c9ba84a6afff43
+//           98e172aabffeeea067d40d5e8e077e0c64fe2e11496f6a06938c099cde61cb9e
 //
 //  Vì sao chép chứ không import module / submodule: kho này độc lập với ViGov (README, dòng
 //  đầu) — không `replace`, không go.mod chung, không đường dẫn trỏ sang kho kia. Một tệp chép
@@ -267,15 +267,42 @@ type OpenCitizenSessionResponse struct {
 	// The commune's display name at issuance, for the header and the confirmation screen. Display
 	// only, point-in-time. "" exactly when `tenant_id` is "". Everything else about the commune
 	// (address, logo, hotline, hours) is a separate citizen read of the display profile owned by
-	// service-platform (ADR 0045 §Hồ sơ hiển thị) — deliberately not on this path.
+	// service-platform (ADR 0045 §Hồ sơ hiển thị) — deliberately not on this path. The one
+	// exception, `commune_primary_host`, is a lookup key for those reads, not content.
 	TenantDisplayName string `protobuf:"bytes,5,opt,name=tenant_display_name,json=tenantDisplayName,proto3" json:"tenant_display_name,omitempty"`
 	// Whether this session is bound to a verified citizen identity (a phone number verified now or
 	// previously for this Zalo account). false: the session may browse, and every route that reads
 	// or writes the citizen's own records refuses it (ADR 0045 §Phiên chưa có số điện thoại).
 	PhoneVerified bool        `protobuf:"varint,6,opt,name=phone_verified,json=phoneVerified,proto3" json:"phone_verified,omitempty"`
 	AppMode       MiniAppMode `protobuf:"varint,7,opt,name=app_mode,json=appMode,proto3,enum=vigov.identity.v1.MiniAppMode" json:"app_mode,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The PRIMARY domain of the session's commune at issuance, e.g. "xa-a.vigov.vn" (owner's decision,
+	// 2026-09-27). What the Mini App passes as `?host=` to the PUBLIC per-commune reads
+	// (GET /api/v1/commune-news, /api/v1/commune-staff). A commune's dedicated app needs it most: its
+	// bundle carries no per-commune value (ADR 0047, stop condition #2), so this is the only place it
+	// can learn its own commune's domain.
+	//
+	// SOURCE: the host service-platform marks as primary for the commune (`tenant_domain.la_chinh`,
+	// at most one per commune by a unique index) — the `host` GetTenant returns for `tenant_id`.
+	// NEVER an echo of `commune_host_hint`: after a merger the hint may be the absorbed commune's old
+	// domain, re-pointed to the successor (ADR 0047, decision 4); this field is the successor's own.
+	//
+	// "" WHEN `tenant_id` IS "". ALSO "" when the commune holds no primary domain (a configuration
+	// state, not an error): the session is still valid, and the Mini App skips the public reads. It
+	// NEVER substitutes a domain — not the hint, not one built from the display name, not a default.
+	// A reserved platform address (admin.vigov.vn, *.api.vigov.vn …, ADR 0046) is never returned even
+	// if it is the row marked primary: ResolveHost answers no commune for it, so it is "" here too.
+	//
+	// DISPLAY / LOOKUP DATA, NEVER THE COMMUNE REFERENCE (rule 1, invariant 2; ADR 0047, stop
+	// condition #1). The commune of the session is `tenant_id` and, for every citizen route, the
+	// session itself (ADR 0022). A client must not persist this value as "which commune I am in",
+	// nor send it back to name its commune: the domain a commune answers to changes on a merger, and
+	// every new session replaces it. Point-in-time, like `tenant_display_name`.
+	//
+	// Optional by construction (a new proto3 field): a caller built before it reads "" and behaves as
+	// it did (rule 2, forbidden #4). Not personal data; may be logged.
+	CommunePrimaryHost string `protobuf:"bytes,8,opt,name=commune_primary_host,json=communePrimaryHost,proto3" json:"commune_primary_host,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *OpenCitizenSessionResponse) Reset() {
@@ -357,6 +384,13 @@ func (x *OpenCitizenSessionResponse) GetAppMode() MiniAppMode {
 	return MiniAppMode_MINI_APP_MODE_UNSPECIFIED
 }
 
+func (x *OpenCitizenSessionResponse) GetCommunePrimaryHost() string {
+	if x != nil {
+		return x.CommunePrimaryHost
+	}
+	return ""
+}
+
 var File_vigov_identity_v1_citizen_session_bridge_proto protoreflect.FileDescriptor
 
 const file_vigov_identity_v1_citizen_session_bridge_proto_rawDesc = "" +
@@ -372,7 +406,7 @@ const file_vigov_identity_v1_citizen_session_bridge_proto_rawDesc = "" +
 	"\x0everified_phone\x18\x05 \x01(\tR\rverifiedPhone\x12\x1b\n" +
 	"\tclient_ip\x18\x06 \x01(\tR\bclientIp\x12\x16\n" +
 	"\x06device\x18\a \x01(\tR\x06device\x12*\n" +
-	"\x11commune_host_hint\x18\b \x01(\tR\x0fcommuneHostHint\"\xca\x02\n" +
+	"\x11commune_host_hint\x18\b \x01(\tR\x0fcommuneHostHint\"\xfc\x02\n" +
 	"\x1aOpenCitizenSessionResponse\x12#\n" +
 	"\rsession_token\x18\x01 \x01(\tR\fsessionToken\x12\x1d\n" +
 	"\n" +
@@ -382,7 +416,8 @@ const file_vigov_identity_v1_citizen_session_bridge_proto_rawDesc = "" +
 	"\ttenant_id\x18\x04 \x01(\tR\btenantId\x12.\n" +
 	"\x13tenant_display_name\x18\x05 \x01(\tR\x11tenantDisplayName\x12%\n" +
 	"\x0ephone_verified\x18\x06 \x01(\bR\rphoneVerified\x129\n" +
-	"\bapp_mode\x18\a \x01(\x0e2\x1e.vigov.identity.v1.MiniAppModeR\aappMode*_\n" +
+	"\bapp_mode\x18\a \x01(\x0e2\x1e.vigov.identity.v1.MiniAppModeR\aappMode\x120\n" +
+	"\x14commune_primary_host\x18\b \x01(\tR\x12communePrimaryHost*_\n" +
 	"\vMiniAppMode\x12\x1d\n" +
 	"\x19MINI_APP_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12MINI_APP_MODE_MAIN\x10\x01\x12\x19\n" +

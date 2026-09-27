@@ -2,9 +2,9 @@
 //  BẢN CHÉP — KHÔNG SỬA TAY. Hợp đồng này thuộc ViGov (bên phục vụ), không thuộc kho này.
 //
 //  Nguồn:   vigov-v2, proto/vigov/identity/v1/citizen_session_bridge.proto
-//  Commit:  39d43979afc5c475d857eb4d777fb414b95d2524 (39d4397)
+//  Commit:  92e0c779d4c0dd3f407b0114f752687194ce11b4 (92e0c77)
 //  SHA-256 của phần thân (mọi byte SAU dòng "HẾT ĐẦU TỆP" bên dưới):
-//           61f4462db8e9e4594b905883c07e2a51d93f765f07b2841416c9ba84a6afff43
+//           98e172aabffeeea067d40d5e8e077e0c64fe2e11496f6a06938c099cde61cb9e
 //
 //  Vì sao chép chứ không import module / submodule: kho này độc lập với ViGov (README, dòng
 //  đầu) — không `replace`, không go.mod chung, không đường dẫn trỏ sang kho kia. Một tệp chép
@@ -60,9 +60,10 @@ const (
 //     verification — which app, which Zalo account, and optionally the phone number Zalo attested.
 //
 // THE COMMUNE: this RPC is called before any commune is known — it is the call that DECIDES the
-// commune of the session — so it cannot carry "x-tenant-id". It needs a place on
-// core/grpcx.methodsWithoutTenant, and adding a name there is a STOP CONDITION (ADR 0012,
-// decision 1). NOT ADDED BY THIS CONTRACT. Until the user answers, the interceptor refuses it.
+// commune of the session — so it cannot carry "x-tenant-id". It therefore sits on
+// core/grpcx.methodsWithoutTenant; adding a name there is a STOP CONDITION (ADR 0012, decision 1),
+// and this one was asked and answered yes by the owner on 2026-09-25 (ADR 0045, CÒN MỞ #1). The
+// reason it does not widen the hole is written beside that list.
 //
 // NEVER LOG A MESSAGE OF THIS FILE. The generated String() prints every field in full
 // (`debug_redact` is a no-op in protobuf-go v1.36.12, measured 2026-09-20); the request carries a
@@ -151,9 +152,10 @@ func (c *citizenSessionBridgeServiceClient) OpenCitizenSession(ctx context.Conte
 //     verification — which app, which Zalo account, and optionally the phone number Zalo attested.
 //
 // THE COMMUNE: this RPC is called before any commune is known — it is the call that DECIDES the
-// commune of the session — so it cannot carry "x-tenant-id". It needs a place on
-// core/grpcx.methodsWithoutTenant, and adding a name there is a STOP CONDITION (ADR 0012,
-// decision 1). NOT ADDED BY THIS CONTRACT. Until the user answers, the interceptor refuses it.
+// commune of the session — so it cannot carry "x-tenant-id". It therefore sits on
+// core/grpcx.methodsWithoutTenant; adding a name there is a STOP CONDITION (ADR 0012, decision 1),
+// and this one was asked and answered yes by the owner on 2026-09-25 (ADR 0045, CÒN MỞ #1). The
+// reason it does not widen the hole is written beside that list.
 //
 // NEVER LOG A MESSAGE OF THIS FILE. The generated String() prints every field in full
 // (`debug_redact` is a no-op in protobuf-go v1.36.12, measured 2026-09-20); the request carries a

@@ -61,7 +61,24 @@ func (s *Server) taoPhien(w http.ResponseWriter, r *http.Request) {
 		s.traLoi(w, http.StatusBadRequest, loiYeuCauHong)
 		return
 	}
-	if s.cau != nil {
+	// CHỌN NHÁNH THEO YÊU CẦU, không theo cấu hình (chủ dự án chốt 27/09/2026).
+	// Cầu bật mà nuốt MỌI lượt đăng nhập thì phần thương mại (Tư vấn / Yêu cầu
+	// của tôi — /api/v1/requests) mất phiên: thân cầu không có `token` gốc.
+	//
+	//   communeHostHint KHÁC RỖNG -> cầu ViGov. Đó là công dân vừa xác nhận xã ở
+	//                                nửa ViGov của citizen-app.
+	//   còn lại                   -> phiên thương mại, y như khi cầu tắt.
+	//
+	// "Khác rỗng" là so NGUYÊN VĂN, không trim: kho này không diễn giải tên miền.
+	// Một chuỗi sai khuôn (kể cả toàn khoảng trắng) vẫn đi cầu như trước, và
+	// ViGov trả INVALID_ARGUMENT -> 400.
+	//
+	// ⚠ App RIÊNG của xã (ADR 0044/0047) mở KHÔNG có tên miền — xã đến từ App
+	// ID — nên theo luật này nó rơi về phiên thương mại. Hôm nay chưa có app
+	// riêng nào đi qua kho này (một cặp app id/secret, ADR 0045 UNKNOWN #1). Ngày
+	// có, nhánh cầu phải được chọn theo APP ID đã xác minh, không theo thân yêu
+	// cầu — chưa làm, cần chủ dự án quyết.
+	if s.cau != nil && yc.CommuneHostHint != "" {
 		s.taoPhienViGov(w, r, yc, ip)
 		return
 	}

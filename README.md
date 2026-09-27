@@ -106,19 +106,27 @@ phản hồi.
 ### Cầu phiên ViGov — khi `VIGOV_CITIZEN_SESSION_BRIDGE_*` được đặt
 
 Cầu **tắt** (mặc định, hai biến trống): mọi thứ ở trên đứng nguyên; `communeHostHint` và
-`communeConfirmed` bị bỏ qua. Cầu **bật**: cùng tuyến, hành vi khác — tuyến phát **phiên công
-dân của ViGov** (gọi `OpenCitizenSession` trên cổng cầu của `service-identity`) và **không**
-phát phiên của kho này. Quyết định: ADR 0045 + 0047 ở kho ViGov. Mã: `internal/httpapi/sessions_vigov.go`.
+`communeConfirmed` bị bỏ qua. Cầu **bật**: nhánh được chọn **theo từng yêu cầu** (chủ dự án
+chốt 27/09/2026, `internal/httpapi/sessions.go`):
+
+| Thân yêu cầu | Nhánh |
+|---|---|
+| `communeHostHint` **khác rỗng** (so nguyên văn, không trim) | **phiên công dân của ViGov** (gọi `OpenCitizenSession` trên cổng cầu của `service-identity`); **không** phát phiên của kho này |
+| không có / rỗng | **phiên của kho này**, y như cầu tắt — Tư vấn / Yêu cầu của tôi giữ đăng nhập |
+
+Quyết định: ADR 0045 + 0047 ở kho ViGov. Mã: `internal/httpapi/sessions_vigov.go`.
 
 ```
-POST /api/v1/sessions          (cầu BẬT)
+POST /api/v1/sessions          (cầu BẬT, có communeHostHint)
   gửi: {"accessToken": "...",            bắt buộc
         "phoneToken": "...",             TUỲ CHỌN — chỉ khi công dân gửi thứ gì đó
-        "communeHostHint": "xa-a.vigov.vn",  tuỳ chọn, NGUYÊN VĂN tham số của QR
+        "communeHostHint": "xa-a.vigov.vn",  BẮT BUỘC để đi cầu, NGUYÊN VĂN tham số của QR
         "communeConfirmed": true}        tuỳ chọn — công dân đã bấm xác nhận xã
   201: {"vigovSession": {"token": "<bearer ViGov>", "expiresAt": "<RFC3339>",
-                          "tenantDisplayName": "<tên xã>", "phoneVerified": true}}
+                          "tenantDisplayName": "<tên xã>", "phoneVerified": true,
+                          "communePrimaryHost": "<tên miền chính của xã>"}}
        phiên không xã: không có token/expiresAt, tenantDisplayName = "" → màn giới thiệu
+       communePrimaryHost LUÔN có mặt; "" khi không xã hoặc xã chưa có tên miền chính
 ```
 
 | Mã | Khi nào (cầu bật) |
@@ -620,11 +628,13 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
     UNKNOWN #2 (kho ViGov): chưa đo endpoint nào xác minh `accessToken` và trả mã tài khoản
     mà không cần `phoneToken`; `/v2.0/me/info` đã đo chỉ trả số. Chỗ nối là
     `internal/zalo/ma_tai_khoan.go`, cài đặt duy nhất `MaTaiKhoanChuaDo` **luôn từ chối** —
-    bật cầu hôm nay là **mọi** lượt đăng nhập trả 503 (log khởi động nói vậy).
+    bật cầu hôm nay là **mọi** lượt đi cầu (có `communeHostHint`) trả 503 (log khởi động nói vậy).
     → Đo bằng token thật theo khuôn `cmd/thu-zalo`, ghi hình dạng vào `wire.go`, rồi viết cài
     đặt thật. **Không đoán tên endpoint hay tên trường.**
 14. **Cầu phiên ViGov: một App ID.** Chỉ có một cặp `ZALO_MINIAPP_APP_ID`/`_SECRET_KEY`; app
     riêng của từng xã cần N cặp và cách chọn cặp theo yêu cầu (ADR 0045 UNKNOWN #1, chưa đo).
-15. **Cầu bật thì bề mặt `/api/v1/requests` mất phiên.** Nhánh cầu không phát phiên của kho
-    này, nên token cho `/requests` không còn được cấp. Chủ sản phẩm phải chốt: tách tuyến,
-    hay cấp cả hai phiên khi có `phoneToken`.
+15. ~~Cầu bật thì bề mặt `/api/v1/requests` mất phiên~~ — **ĐÃ SỬA 27/09/2026**: chọn nhánh
+    theo `communeHostHint` (`internal/httpapi/sessions.go`). **Còn mở:** app RIÊNG của xã mở
+    không có tên miền (xã đến từ App ID, ADR 0047), nên theo luật này rơi về phiên thương mại.
+    Ngày có app riêng (cùng lúc với #14), nhánh cầu phải chọn theo App ID đã xác minh — chủ dự
+    án chốt trước khi làm.

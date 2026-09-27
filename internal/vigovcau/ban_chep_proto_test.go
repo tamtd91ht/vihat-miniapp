@@ -18,7 +18,7 @@ import (
 const (
 	tepBanChep   = "../../proto/vigov/identity/v1/citizen_session_bridge.proto"
 	dauMucHetDau = "// ==== HẾT ĐẦU TỆP ===="
-	shaThanNguon = "61f4462db8e9e4594b905883c07e2a51d93f765f07b2841416c9ba84a6afff43"
+	shaThanNguon = "98e172aabffeeea067d40d5e8e077e0c64fe2e11496f6a06938c099cde61cb9e"
 )
 
 func TestBanChepProto_ThanKhopNguon(t *testing.T) {

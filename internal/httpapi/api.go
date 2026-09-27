@@ -107,8 +107,9 @@ type MaTaiKhoanZalo interface {
 	LayMaTaiKhoan(ctx context.Context, accessToken string) (string, error)
 }
 
-// VoiCauPhienViGov bật cầu phiên: từ đây POST /api/v1/sessions phát PHIÊN
-// CÔNG DÂN CỦA ViGov thay cho phiên của kho này — xem sessions_vigov.go.
+// VoiCauPhienViGov bật cầu phiên: từ đây POST /api/v1/sessions có mang
+// communeHostHint phát PHIÊN CÔNG DÂN CỦA ViGov; lượt không mang nó vẫn là
+// phiên của kho này — xem sessions.go (chọn nhánh) và sessions_vigov.go.
 //
 // appID là App ID mà secret của nó xác minh token — hôm nay chỉ có MỘT cặp
 // (ZALO_MINIAPP_APP_ID / ZALO_MINIAPP_SECRET_KEY). N app riêng cần N cặp và

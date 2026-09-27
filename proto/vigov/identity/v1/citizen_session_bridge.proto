@@ -2,9 +2,9 @@
 //  BẢN CHÉP — KHÔNG SỬA TAY. Hợp đồng này thuộc ViGov (bên phục vụ), không thuộc kho này.
 //
 //  Nguồn:   vigov-v2, proto/vigov/identity/v1/citizen_session_bridge.proto
-//  Commit:  39d43979afc5c475d857eb4d777fb414b95d2524 (39d4397)
+//  Commit:  92e0c779d4c0dd3f407b0114f752687194ce11b4 (92e0c77)
 //  SHA-256 của phần thân (mọi byte SAU dòng "HẾT ĐẦU TỆP" bên dưới):
-//           61f4462db8e9e4594b905883c07e2a51d93f765f07b2841416c9ba84a6afff43
+//           98e172aabffeeea067d40d5e8e077e0c64fe2e11496f6a06938c099cde61cb9e
 //
 //  Vì sao chép chứ không import module / submodule: kho này độc lập với ViGov (README, dòng
 //  đầu) — không `replace`, không go.mod chung, không đường dẫn trỏ sang kho kia. Một tệp chép
@@ -37,9 +37,10 @@ import "google/protobuf/timestamp.proto";
 //     verification — which app, which Zalo account, and optionally the phone number Zalo attested.
 //
 // THE COMMUNE: this RPC is called before any commune is known — it is the call that DECIDES the
-// commune of the session — so it cannot carry "x-tenant-id". It needs a place on
-// core/grpcx.methodsWithoutTenant, and adding a name there is a STOP CONDITION (ADR 0012,
-// decision 1). NOT ADDED BY THIS CONTRACT. Until the user answers, the interceptor refuses it.
+// commune of the session — so it cannot carry "x-tenant-id". It therefore sits on
+// core/grpcx.methodsWithoutTenant; adding a name there is a STOP CONDITION (ADR 0012, decision 1),
+// and this one was asked and answered yes by the owner on 2026-09-25 (ADR 0045, CÒN MỞ #1). The
+// reason it does not widen the hole is written beside that list.
 //
 // NEVER LOG A MESSAGE OF THIS FILE. The generated String() prints every field in full
 // (`debug_redact` is a no-op in protobuf-go v1.36.12, measured 2026-09-20); the request carries a
@@ -194,7 +195,8 @@ message OpenCitizenSessionResponse {
   // The commune's display name at issuance, for the header and the confirmation screen. Display
   // only, point-in-time. "" exactly when `tenant_id` is "". Everything else about the commune
   // (address, logo, hotline, hours) is a separate citizen read of the display profile owned by
-  // service-platform (ADR 0045 §Hồ sơ hiển thị) — deliberately not on this path.
+  // service-platform (ADR 0045 §Hồ sơ hiển thị) — deliberately not on this path. The one
+  // exception, `commune_primary_host`, is a lookup key for those reads, not content.
   string tenant_display_name = 5;
 
   // Whether this session is bound to a verified citizen identity (a phone number verified now or
@@ -203,4 +205,31 @@ message OpenCitizenSessionResponse {
   bool phone_verified = 6;
 
   MiniAppMode app_mode = 7;
+
+  // The PRIMARY domain of the session's commune at issuance, e.g. "xa-a.vigov.vn" (owner's decision,
+  // 2026-09-27). What the Mini App passes as `?host=` to the PUBLIC per-commune reads
+  // (GET /api/v1/commune-news, /api/v1/commune-staff). A commune's dedicated app needs it most: its
+  // bundle carries no per-commune value (ADR 0047, stop condition #2), so this is the only place it
+  // can learn its own commune's domain.
+  //
+  // SOURCE: the host service-platform marks as primary for the commune (`tenant_domain.la_chinh`,
+  // at most one per commune by a unique index) — the `host` GetTenant returns for `tenant_id`.
+  // NEVER an echo of `commune_host_hint`: after a merger the hint may be the absorbed commune's old
+  // domain, re-pointed to the successor (ADR 0047, decision 4); this field is the successor's own.
+  //
+  // "" WHEN `tenant_id` IS "". ALSO "" when the commune holds no primary domain (a configuration
+  // state, not an error): the session is still valid, and the Mini App skips the public reads. It
+  // NEVER substitutes a domain — not the hint, not one built from the display name, not a default.
+  // A reserved platform address (admin.vigov.vn, *.api.vigov.vn …, ADR 0046) is never returned even
+  // if it is the row marked primary: ResolveHost answers no commune for it, so it is "" here too.
+  //
+  // DISPLAY / LOOKUP DATA, NEVER THE COMMUNE REFERENCE (rule 1, invariant 2; ADR 0047, stop
+  // condition #1). The commune of the session is `tenant_id` and, for every citizen route, the
+  // session itself (ADR 0022). A client must not persist this value as "which commune I am in",
+  // nor send it back to name its commune: the domain a commune answers to changes on a merger, and
+  // every new session replaces it. Point-in-time, like `tenant_display_name`.
+  //
+  // Optional by construction (a new proto3 field): a caller built before it reads "" and behaves as
+  // it did (rule 2, forbidden #4). Not personal data; may be logged.
+  string commune_primary_host = 8;
 }
