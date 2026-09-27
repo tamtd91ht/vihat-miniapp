@@ -34,6 +34,8 @@ giờ lên cụm**.
 | `ZALO_MINIAPP_APP_ID` | `ZALO_MINIAPP_APP_ID` | ConfigMap `vihat-miniapp-cau-hinh` | cùng tên, trong tệp | **CÓ** — một secret không kèm app id thì không ai xoay vòng hay chẩn đoán được | không khởi động |
 | `CORS_ALLOWED_ORIGINS` | `CORS_ALLOWED_ORIGINS` | ConfigMap `vihat-miniapp-cau-hinh` | cùng tên, trong tệp | **CÓ** — và config **từ chối `*`** ngay lúc nạp | không khởi động. Đặt sai origin thì **nút đăng nhập chết im lặng** trên máy thật: trình duyệt chặn, không có lỗi nào tới máy chủ |
 | `LISTEN_ADDR` | `LISTEN_ADDR` | ConfigMap (`optional: true`) | tuỳ chọn | **KHÔNG** — mặc định `:8080` | chạy bình thường. Đổi mà quên `containerPort` thì probe gõ vào cổng không ai nghe, pod **không bao giờ Ready** |
+| `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | ConfigMap (`optional: true`) | tuỳ chọn | **KHÔNG** — nhưng **đi cặp** với khoá bên dưới | cả hai trống: cầu tắt, đăng nhập như cũ. **Một nửa: không khởi động**. Danh sách `host:port` của **cổng cầu** identity, không phải cổng 9090 |
+| `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | **Secret** (`optional: true`) | tuỳ chọn | **KHÔNG** — đi cặp với địa chỉ ở trên | như trên; khoá < 32 byte cũng không khởi động. **Không bao giờ** là `GRPC_CALLER_KEY` của ViGov |
 | `TEST_DATABASE_DSN` | — | **không lên cụm** | tuỳ chọn, cho `make test-csdl` | **KHÔNG** | test chạm CSDL tự SKIP kèm lý do |
 
 Danh sách này bị khoá bằng phép kiểm: `internal/config/ban_ke_bien_test.go` bắt
@@ -275,7 +277,7 @@ trường, và trên cụm môi trường ấy đến từ Secret/ConfigMap qua 
 |---|---|
 | **Ingress / TLS** | Chưa có đường vào từ Internet. Zalo Mini App chỉ gọi được qua **HTTPS**. **HAI đường phải mở, không phải một:** `/api/v1/sessions` cho Mini App, và `/webhooks/zalo` cho hạ tầng Zalo gọi vào. Quên đường thứ hai thì webhook nhận 404 và **Zalo tắt nó** — mà lúc ấy không có gì báo cho ai, nó chỉ lặng đi |
 | **Khai báo proxy tin cậy** | Đứng sau ingress thì `RemoteAddr` là IP của proxy: cả thế giới **chung một xô** trong bộ giới hạn theo IP, và `nhat_ky_dang_nhap.dia_chi_ip` ghi nhầm IP. Xem NỢ #5 ở README gốc. **Đừng** bật tin `X-Forwarded-For` trước khi khai proxy tin cậy — ai cũng giả được header đó |
-| **NetworkPolicy** | Mọi pod trong namespace gọi thẳng được vào cổng 8080 |
+| **NetworkPolicy** | Mọi pod trong namespace gọi thẳng được vào cổng 8080. Chiều ra: khi bật cầu phiên ViGov, phía ViGov phải có luật **chỉ cho pod này** tới cổng cầu của identity. Cầu đi **không TLS** vì hai bên cùng cụm (ADR 0045 của ViGov, UNKNOWN #5 đã trả lời); tách cụm thì phải có TLS trước |
 | **PodDisruptionBudget** | Một lần drain node có thể hạ cả hai bản sao cùng lúc |
 | **Cảnh báo cho CronJob** | Lịch dọn ngừng chạy mà **không ai biết** — xem mục CronJob |
 | **Chạy migration lúc triển khai** | `make migrate` vẫn là việc chạy tay. Lược đồ **chưa từng được áp dụng lần nào** (NỢ #8) — chạy nó trên một Postgres thật trước khi tin manifest này |

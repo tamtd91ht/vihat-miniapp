@@ -40,6 +40,9 @@ var banKe = []struct {
 	{EnvZNSTemplateID, false, true, "configmap.example.yaml"},
 	{EnvTongDaiCallbackURL, false, true, "configmap.example.yaml"},
 	{EnvTongDaiAPIKey, true, true, "secret.example.yaml"},
+	// Hai biến TUỲ CHỌN của cầu phiên ViGov — cả hai hoặc không biến nào.
+	{EnvVigovCauDiaChi, false, true, "configmap.example.yaml"},
+	{EnvVigovCauKhoa, true, true, "secret.example.yaml"},
 	// Chỉ dùng cho `go test ./internal/store`. Không bao giờ lên cụm: một CSDL
 	// test khai báo trong môi trường sản xuất là một CSDL test sẽ bị ai đó ghi vào.
 	{"TEST_DATABASE_DSN", false, false, ""},

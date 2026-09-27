@@ -19,6 +19,7 @@ import (
 	"github.com/vihat/vihat-miniapp/internal/httpapi"
 	"github.com/vihat/vihat-miniapp/internal/store"
 	"github.com/vihat/vihat-miniapp/internal/tongdai"
+	"github.com/vihat/vihat-miniapp/internal/vigovcau"
 	"github.com/vihat/vihat-miniapp/internal/yeucau"
 	"github.com/vihat/vihat-miniapp/internal/zalo"
 	"github.com/vihat/vihat-miniapp/internal/zns"
@@ -102,6 +103,22 @@ func chay(log *slog.Logger) error {
 
 	api := httpapi.Moi(kho, zalo.New("", cfg.ZaloSecretKey), cfg, log).
 		VoiYeuCau(kho, yeucau.Moi(kho, goiRa, guiZNS, log))
+
+	// Cầu phiên ViGov — chỉ khi cả hai biến có (config đã từ chối nửa cấu hình).
+	// In BẬT/TẮT và SỐ địa chỉ, không bao giờ in khoá.
+	log.Info("cầu phiên ViGov", "bat", cfg.CauPhienBat(), "so_dia_chi", len(cfg.VigovCauDiaChi))
+	if cfg.CauPhienBat() {
+		cau, err := vigovcau.Mo(cfg.VigovCauDiaChi, cfg.VigovCauKhoa)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = cau.Dong() }()
+		// ⚠ Nguồn mã tài khoản Zalo hôm nay là MaTaiKhoanChuaDo — LUÔN từ chối
+		// (ADR 0045 UNKNOWN #2). Bật cầu lúc này nghĩa là MỌI lượt đăng nhập
+		// trả 503; nói ra ngay trong log khởi động thay vì để người dùng báo.
+		log.Warn("cầu phiên ViGov BẬT nhưng chưa có cách đã đo để lấy mã tài khoản Zalo — mọi lượt POST /api/v1/sessions sẽ trả 503 cho tới khi đo xong (xem internal/zalo/ma_tai_khoan.go)")
+		api.VoiCauPhienViGov(cau, zalo.MaTaiKhoanChuaDo{}, cfg.ZaloAppID)
+	}
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,

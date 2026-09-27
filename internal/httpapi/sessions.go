@@ -19,6 +19,12 @@ const gioiHanThan = 8 << 10
 type yeuCauTaoPhien struct {
 	AccessToken string `json:"accessToken"`
 	PhoneToken  string `json:"phoneToken"`
+
+	// Hai trường CHỈ có nghĩa khi cầu phiên ViGov bật (sessions_vigov.go); cầu
+	// tắt thì bị bỏ qua. Kho này không diễn giải chúng: tên miền xã và cờ xác
+	// nhận đi NGUYÊN VĂN sang ViGov, máy chủ ấy kiểm và quyết.
+	CommuneHostHint  string `json:"communeHostHint"`
+	CommuneConfirmed bool   `json:"communeConfirmed"`
 }
 
 // taoPhien — POST /api/v1/sessions. CÔNG KHAI: đây chính là tuyến đăng nhập,
@@ -53,6 +59,10 @@ func (s *Server) taoPhien(w http.ResponseWriter, r *http.Request) {
 		// KHÔNG trả err ra ngoài: thông điệp của bộ giải mã JSON có thể chứa
 		// nguyên văn thứ client gửi lên.
 		s.traLoi(w, http.StatusBadRequest, loiYeuCauHong)
+		return
+	}
+	if s.cau != nil {
+		s.taoPhienViGov(w, r, yc, ip)
 		return
 	}
 	if yc.AccessToken == "" || yc.PhoneToken == "" {

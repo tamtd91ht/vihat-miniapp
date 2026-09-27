@@ -1,7 +1,7 @@
 # vihat-miniapp — Deployment MẪU.
 #
-# Chín biến, chín dòng `env:` tường minh (năm biến gốc + bốn biến tuỳ chọn của
-# bề mặt "yêu cầu", xem khối trong `env:`). CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
+# Mười một biến, mười một dòng `env:` tường minh (năm biến gốc + bốn biến tuỳ chọn
+# của bề mặt "yêu cầu" + hai biến tuỳ chọn của cầu phiên ViGov, xem khối trong `env:`). CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
 # bẫy đằng sau nằm trong deploy/README.md mục "Vì sao env: tường minh". Đọc mục
 # ấy trước khi rút gọn tệp này.
 apiVersion: apps/v1
@@ -133,6 +133,21 @@ spec:
                 secretKeyRef:
                   name: vihat-miniapp-bi-mat
                   key: TONGDAI_API_KEY
+                  optional: true
+            # Cau phien ViGov — tuy chon, nhung DI CAP: config.Nap tu choi
+            # khoi dong khi chi co mot trong hai. `optional: true` chi noi
+            # kubelet khong chan; viec chan nua cau hinh la cua config.
+            - name: VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS
+                  optional: true
+            - name: VIGOV_CITIZEN_SESSION_BRIDGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: VIGOV_CITIZEN_SESSION_BRIDGE_KEY
                   optional: true
 
           # ===================================================================

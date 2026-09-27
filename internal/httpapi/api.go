@@ -18,6 +18,7 @@ import (
 
 	"github.com/vihat/vihat-miniapp/internal/config"
 	"github.com/vihat/vihat-miniapp/internal/phien"
+	"github.com/vihat/vihat-miniapp/internal/vigovcau"
 	"github.com/vihat/vihat-miniapp/internal/yeucau"
 )
 
@@ -59,6 +60,12 @@ type Server struct {
 	khoPhien      KhoPhien
 	yeuCau        *yeucau.DichVu
 	gioiHanYeuCau *GioiHanIP
+
+	// Ba trường của cầu phiên ViGov — xem `VoiCauPhienViGov`. nil là cầu TẮT:
+	// tuyến đăng nhập chạy đúng hành vi cũ.
+	cau      CauPhienViGov
+	maZalo   MaTaiKhoanZalo
+	appIDCau string
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -86,6 +93,30 @@ func (s *Server) VoiYeuCau(khoPhien KhoPhien, dv *yeucau.DichVu) *Server {
 	s.khoPhien = khoPhien
 	s.yeuCau = dv
 	s.gioiHanYeuCau = MoiGioiHan(SoLuotYeuCauToiDa, CuaSoYeuCau)
+	return s
+}
+
+// CauPhienViGov mở một phiên công dân ở ViGov. Cài đặt: internal/vigovcau.
+type CauPhienViGov interface {
+	MoPhien(ctx context.Context, yc vigovcau.YeuCau) (vigovcau.KetQua, error)
+}
+
+// MaTaiKhoanZalo xác minh accessToken bằng secret của app và trả mã tài khoản
+// Zalo. Hôm nay chỉ có zalo.MaTaiKhoanChuaDo — luôn từ chối (ADR 0045 UNKNOWN #2).
+type MaTaiKhoanZalo interface {
+	LayMaTaiKhoan(ctx context.Context, accessToken string) (string, error)
+}
+
+// VoiCauPhienViGov bật cầu phiên: từ đây POST /api/v1/sessions phát PHIÊN
+// CÔNG DÂN CỦA ViGov thay cho phiên của kho này — xem sessions_vigov.go.
+//
+// appID là App ID mà secret của nó xác minh token — hôm nay chỉ có MỘT cặp
+// (ZALO_MINIAPP_APP_ID / ZALO_MINIAPP_SECRET_KEY). N app riêng cần N cặp và
+// cách chọn cặp theo yêu cầu (ADR 0045 UNKNOWN #1) — chưa làm.
+//
+// Tách khỏi `Moi` vì cùng lý do `VoiYeuCau`: test của phiên cũ gọi `Moi` trần.
+func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appID string) *Server {
+	s.cau, s.maZalo, s.appIDCau = cau, maZalo, appID
 	return s
 }
 

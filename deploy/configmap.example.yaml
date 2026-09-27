@@ -48,3 +48,11 @@ data:
   # Đích nhận lệnh quay số ra cho tính năng "gọi lại".
   # ⚠ Hình dạng dây CHƯA ĐO — đọc internal/tongdai/client.go trước khi điền.
   TONGDAI_CALLBACK_URL: "<dien-vao-url-cong-kich-cuoc-goi>"
+
+  # ---------------------------------------------------------------------
+  # CẦU PHIÊN ViGov — tuỳ chọn, đi CẶP với VIGOV_CITIZEN_SESSION_BRIDGE_KEY ở
+  # Secret. Một nửa thì service KHÔNG khởi động.
+  # ---------------------------------------------------------------------
+
+  # Cổng cầu phiên của service-identity: danh sách host:port, dấu phẩy.
+  VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS: "<dien-vao-host-cong-cau-1>:<cong>,<dien-vao-host-cong-cau-2>:<cong>"

@@ -8,7 +8,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,7 +63,33 @@ type Config struct {
 	// Tổng đài: đích nhận lệnh quay số ra cho tính năng "gọi lại".
 	TongDaiCallbackURL string
 	TongDaiAPIKey      secret.Secret
+
+	// ---------------------------------------------------------------------
+	// CẦU PHIÊN CÔNG DÂN ViGov — HAI BIẾN, CẢ HAI HOẶC KHÔNG BIẾN NÀO.
+	//
+	// Bật thì POST /api/v1/sessions phát PHIÊN CÔNG DÂN CỦA ViGov (gọi
+	// CitizenSessionBridgeService.OpenCitizenSession của service-identity) thay
+	// cho phiên của kho này — xem internal/vigovcau. Quyết định và lý do nằm ở
+	// kho ViGov: kb/10-decisions/0045-cau-phien-cong-dan-mini-app.md.
+	//
+	// Cả hai trống: cầu TẮT, tuyến đăng nhập chạy y như trước. Một nửa: KHÔNG
+	// KHỞI ĐỘNG — nửa cấu hình là hỏng, không phải nửa bật (ADR 0045 §Cấu hình).
+	// Có địa chỉ mà thiếu khoá thì mọi lượt đăng nhập công dân nhận
+	// UNAUTHENTICATED; có khoá mà thiếu địa chỉ thì người vận hành tưởng đã bật.
+	// ---------------------------------------------------------------------
+
+	// VigovCauDiaChi: danh sách host:port của CỔNG CẦU của service-identity —
+	// không phải cổng 9090 giữa các service ViGov. DẠNG CỤM từ dòng đầu: một
+	// danh sách, kể cả khi hôm nay chỉ có một địa chỉ.
+	VigovCauDiaChi []string
+	// VigovCauKhoa: khoá cầu gửi ở metadata `x-vigov-bridge-key`. KHÔNG BAO GIỜ
+	// là GRPC_CALLER_KEY của ViGov — khoá ấy mở mọi RPC của mọi service ViGov.
+	VigovCauKhoa secret.Secret
 }
+
+// CauPhienBat — cầu phiên ViGov có được cấu hình hay không. Nap đã bảo đảm
+// hai biến đi cùng nhau, nên một điều kiện là đủ.
+func (c Config) CauPhienBat() bool { return len(c.VigovCauDiaChi) > 0 }
 
 const (
 	EnvDatabaseDSN        = "DATABASE_DSN"
@@ -78,6 +106,18 @@ const (
 	EnvZNSTemplateID      = "ZALO_ZNS_TEMPLATE_ID"
 	EnvTongDaiCallbackURL = "TONGDAI_CALLBACK_URL"
 	EnvTongDaiAPIKey      = "TONGDAI_API_KEY"
+
+	// Hai biến của cầu phiên ViGov. Tiền tố theo BÊN CUNG CẤP (`VIGOV_`), cùng
+	// quy ước `ZALO_ZNS_` / `TONGDAI_`. Tên nói VAI TRÒ (cổng cầu phiên công
+	// dân), không nói cụm hay số thứ tự máy chủ nào.
+	EnvVigovCauDiaChi = "VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS"
+	EnvVigovCauKhoa   = "VIGOV_CITIZEN_SESSION_BRIDGE_KEY"
+
+	// VigovCauKhoaToiThieu — độ dài tối thiểu (byte) của khoá cầu. TRÙNG với
+	// core/grpcx.BridgeKeyMinLen phía ViGov: máy chủ từ chối khởi động với khoá
+	// ngắn hơn, nên một khoá ngắn ở đây chắc chắn là khoá sai. Bắt ngay lúc
+	// khởi động thay vì để mọi lượt đăng nhập nhận UNAUTHENTICATED.
+	VigovCauKhoaToiThieu = 32
 
 	listenAddrMacDinh = ":8080"
 )
@@ -136,6 +176,31 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 	cfg.ZNSTemplateID = tuyChon(EnvZNSTemplateID)
 	cfg.TongDaiCallbackURL = tuyChon(EnvTongDaiCallbackURL)
 	cfg.TongDaiAPIKey = secret.Secret(tuyChon(EnvTongDaiAPIKey))
+
+	// Cầu phiên ViGov: tuỳ chọn như nhóm trên, nhưng NỬA NHÓM THÌ TỪ CHỐI chứ
+	// không lặng lẽ tắt — khác zns/tongdai có chủ đích. Nửa nhóm ZNS chỉ mất
+	// một tin xác nhận; nửa nhóm cầu là người vận hành tin mình đã bật một
+	// đường đăng nhập mà thực ra không có.
+	diaChiCau, khoaCau := tuyChon(EnvVigovCauDiaChi), tuyChon(EnvVigovCauKhoa)
+	switch {
+	case diaChiCau == "" && khoaCau == "":
+		// Tắt. Tuyến đăng nhập giữ nguyên hành vi cũ.
+	case diaChiCau == "" || khoaCau == "":
+		loi = append(loi, "cầu phiên ViGov nửa cấu hình: "+EnvVigovCauDiaChi+" và "+
+			EnvVigovCauKhoa+" phải cùng có hoặc cùng trống")
+	default:
+		ds, err := phanTichDiaChiCum(diaChiCau)
+		if err != nil {
+			loi = append(loi, EnvVigovCauDiaChi+": "+err.Error())
+		}
+		// Chỉ nói ĐỘ DÀI TỐI THIỂU, không nói độ dài đang có: độ dài của một bí
+		// mật cũng là thông tin về nó.
+		if len(khoaCau) < VigovCauKhoaToiThieu {
+			loi = append(loi, fmt.Sprintf("%s: khoá cầu phải dài ít nhất %d byte", EnvVigovCauKhoa, VigovCauKhoaToiThieu))
+		}
+		cfg.VigovCauDiaChi = ds
+		cfg.VigovCauKhoa = secret.Secret(khoaCau)
+	}
 
 	if len(thieu) > 0 {
 		loi = append(loi, "thiếu biến bắt buộc: "+strings.Join(thieu, ", "))
@@ -205,6 +270,39 @@ func NapChiZalo(look func(string) (string, bool)) (CauHinhZalo, error) {
 
 // NapChiZaloTuMoiTruong là lối vào dùng trong sản xuất.
 func NapChiZaloTuMoiTruong() (CauHinhZalo, error) { return NapChiZalo(os.LookupEnv) }
+
+// phanTichDiaChiCum tách danh sách "host:port" ngăn bằng dấu phẩy.
+//
+// Giữ NGUYÊN CẢ DANH SÁCH, không bao giờ cắt lấy một host: cắt thì đúng suốt
+// thời gian còn một node và sai đúng vào ngày có node thứ hai.
+//
+// Từ chối scheme ("http://", "dns:///"): giá trị là địa chỉ mạng, cách quay số
+// là việc của internal/vigovcau. Thông điệp lỗi nêu địa chỉ hỏng — địa chỉ cổng
+// trong cụm không phải bí mật.
+func phanTichDiaChiCum(raw string) ([]string, error) {
+	var out []string
+	for _, phan := range strings.Split(raw, ",") {
+		d := strings.TrimSpace(phan)
+		if d == "" {
+			continue
+		}
+		if strings.Contains(d, "/") {
+			return nil, fmt.Errorf("%q không phải host:port (không kèm scheme hay đường dẫn)", d)
+		}
+		host, cong, err := net.SplitHostPort(d)
+		if err != nil || host == "" {
+			return nil, fmt.Errorf("%q không phải host:port", d)
+		}
+		if n, err := strconv.Atoi(cong); err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("%q có cổng không hợp lệ", d)
+		}
+		out = append(out, d)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("danh sách rỗng")
+	}
+	return out, nil
+}
 
 // phanTichOrigins tách danh sách origin và từ chối "*".
 //

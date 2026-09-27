@@ -1,0 +1,5 @@
+# Mô-đun buf của kho này: CHỈ các tệp hợp đồng CHÉP từ ViGov (xem đầu mỗi tệp .proto).
+#
+# Không có mục lint/breaking: hợp đồng do ViGov sở hữu và kiểm ở kho bên ấy. Chạy lint ở
+# đây là tự cho mình quyền "sửa cho đẹp" một tệp mà phép kiểm sha buộc phải giữ nguyên.
+version: v2

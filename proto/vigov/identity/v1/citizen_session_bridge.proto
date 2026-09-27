@@ -1,0 +1,206 @@
+// ============================================================================
+//  BẢN CHÉP — KHÔNG SỬA TAY. Hợp đồng này thuộc ViGov (bên phục vụ), không thuộc kho này.
+//
+//  Nguồn:   vigov-v2, proto/vigov/identity/v1/citizen_session_bridge.proto
+//  Commit:  39d43979afc5c475d857eb4d777fb414b95d2524 (39d4397)
+//  SHA-256 của phần thân (mọi byte SAU dòng "HẾT ĐẦU TỆP" bên dưới):
+//           61f4462db8e9e4594b905883c07e2a51d93f765f07b2841416c9ba84a6afff43
+//
+//  Vì sao chép chứ không import module / submodule: kho này độc lập với ViGov (README, dòng
+//  đầu) — không `replace`, không go.mod chung, không đường dẫn trỏ sang kho kia. Một tệp chép
+//  kèm sha nguồn là mức ghép nối nhỏ nhất: hợp đồng bên kia đổi thì chép lại tệp, chạy
+//  `make proto`, và internal/vigovcau/ban_chep_proto_test.go xác nhận thân khớp sha.
+//
+//  Sửa thân tệp này thì phép kiểm ấy đỏ. Cập nhật đúng cách: chép NGUYÊN tệp nguồn ở commit
+//  mới xuống dưới dòng HẾT ĐẦU TỆP, sửa hai dòng Commit / SHA-256, `make proto`, `make check`.
+// ==== HẾT ĐẦU TỆP ====
+syntax = "proto3";
+
+package vigov.identity.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// CitizenSessionBridgeService is the ONE door through which a citizen session of ViGov is issued
+// for the Zalo Mini App. Its only caller is the `vihat-miniapp` backend (a separate, commercial
+// repository), after that backend has verified a Zalo token with the secret of the app the token
+// came from. Why it exists, and every decision behind its shape:
+// kb/10-decisions/0045-cau-phien-cong-dan-mini-app.md. ADR 0044 is the decision it implements.
+//
+// A SEPARATE SERVICE, NOT A METHOD ON IdentityService, AND THAT IS STRUCTURAL:
+//
+//   * It is served on its OWN LISTENER with its OWN credential (ADR 0045 §Tin cậy). The caller is
+//     not a ViGov service and must never hold GRPC_CALLER_KEY: that key opens every RPC of every
+//     service (ADR 0025, "không mua được" #2). A listener that serves only this service is what
+//     makes "the bridge credential opens exactly one RPC" a property of the wiring rather than a
+//     list someone has to keep right.
+//   * The app secret never crosses this boundary (ADR 0032). What crosses is the RESULT of the
+//     verification — which app, which Zalo account, and optionally the phone number Zalo attested.
+//
+// THE COMMUNE: this RPC is called before any commune is known — it is the call that DECIDES the
+// commune of the session — so it cannot carry "x-tenant-id". It needs a place on
+// core/grpcx.methodsWithoutTenant, and adding a name there is a STOP CONDITION (ADR 0012,
+// decision 1). NOT ADDED BY THIS CONTRACT. Until the user answers, the interceptor refuses it.
+//
+// NEVER LOG A MESSAGE OF THIS FILE. The generated String() prints every field in full
+// (`debug_redact` is a no-op in protobuf-go v1.36.12, measured 2026-09-20); the request carries a
+// Zalo account identifier and possibly a phone number (rule 3), the response a working bearer
+// token (rule 8). Log the fields you chose, never the message.
+service CitizenSessionBridgeService {
+  // OpenCitizenSession issues a NEW citizen session and returns its bearer token exactly once.
+  //
+  // THE SERVER DECIDES THE COMMUNE; the caller only reports facts it verified (ADR 0044):
+  //
+  //   app mode COMMUNE (dedicated app)  the commune bound to `app_id` in service-platform. No
+  //                                     binding, or the bound commune inactive -> FAILED_PRECONDITION.
+  //                                     `commune_host_hint` is IGNORED in this mode.
+  //   app mode MAIN, commune_confirmed  the commune platform ResolveHost answers for
+  //                                     `commune_host_hint`, which must be an ACTIVE commune; its ULID
+  //                                     becomes the account's remembered commune. Audited, including
+  //                                     the commune it replaced.
+  //   app mode MAIN, otherwise          the account's remembered commune if it is still active,
+  //                                     else "" (the introduction screen only). NEVER a default.
+  //   app_id unknown to the platform    FAILED_PRECONDITION. There is no default app and no default
+  //                                     commune (rule 1, forbidden #1).
+  //
+  // Every call writes a new session row and its audit entry IN ONE TRANSACTION (rule 6,
+  // invariant 3), so it is NOT idempotent: a retry after a timeout may leave one extra session
+  // whose token nobody holds. It expires by TTL; the cost is written in ADR 0045.
+  //
+  // STATUS CODES ARE PART OF THE CONTRACT:
+  //
+  //   OK                   a session was issued.
+  //   INVALID_ARGUMENT     `app_id` or `zalo_user_id` empty; `commune_host_hint` not of the shape
+  //                        its field comment fixes; `tenant_hint` non-empty (retired, see the field);
+  //                        or `commune_confirmed` without `commune_host_hint`. A wiring fault in the
+  //                        caller. Checked in EVERY app mode, before the platform is asked.
+  //   FAILED_PRECONDITION  the platform has no usable binding for this app; or, for a confirmed
+  //                        `commune_host_hint`, the host resolves to no ACTIVE commune — unclaimed,
+  //                        a platform address (admin.vigov.vn …) and a deactivated commune are ONE
+  //                        answer, byte for byte, as ResolveHost makes them one NotFound. A human
+  //                        fixes configuration; the client shows "ứng dụng chưa sẵn sàng" / asks for
+  //                        another QR. Never retried blindly.
+  //   UNAUTHENTICATED      NEVER produced by this RPC — only by the bridge-credential interceptor,
+  //                        and it means the DEPLOYMENT is misconfigured.
+  //   UNAVAILABLE etc.     nothing was issued — including when ResolveHost itself could not be
+  //                        reached: an outage is NEVER reported as FAILED_PRECONDITION, or a platform
+  //                        incident would read to the caller as "this commune does not exist". The
+  //                        caller answers 503; it never falls back to a session of its own for the
+  //                        ViGov surface.
+  rpc OpenCitizenSession(OpenCitizenSessionRequest) returns (OpenCitizenSessionResponse);
+}
+
+message OpenCitizenSessionRequest {
+  // The Zalo Mini App ID whose app secret successfully verified the access token in THIS request.
+  // A CLAIM BY THE BRIDGE CALLER, trusted only because the caller holds the bridge credential and
+  // performed the exchange. HOW the caller learns which secret to use is ADR 0045 UNKNOWN #1.
+  // Not personal data; may be logged.
+  string app_id = 1;
+
+  // The Zalo account id the verified access token belongs to. PERSONAL DATA (an online identifier
+  // under Decree 13/2023): never logged, never returned, never in an audit entry. Whether it is
+  // scoped per app is ADR 0045 UNKNOWN #2 — the server therefore keys the account on
+  // (app_id, zalo_user_id), never on this value alone.
+  string zalo_user_id = 2;
+
+  // DEPRECATED — RETIRED, KEPT ONLY FOR WIRE COMPATIBILITY. Was the `t=<ULID>` parameter of a
+  // discovery QR (ADR 0005). The owner's decision of 2026-09-27 replaced it by the commune's domain
+  // (`commune_host_hint`); no QR was ever issued carrying `t=`, so no caller holds a value for it.
+  //
+  // NOT ACCEPTED: a non-empty value is INVALID_ARGUMENT in every app mode, and so is sending it
+  // together with `commune_host_hint`. Refused rather than ignored, because a caller still wired to
+  // the old shape would otherwise send `commune_confirmed` with a hint the server silently drops —
+  // and refused rather than honoured, because two ways to name the commune of a session are two
+  // paths to keep isolated, one of which no QR can reach. Not `reserved`: removing a published
+  // field is forbidden (rule 2, forbidden #4); `reserved 3` becomes possible only once every
+  // caller is known not to send it.
+  string tenant_hint = 3;
+
+  // The citizen explicitly accepted, on a confirmation screen, the commune `commune_host_hint`
+  // resolves to. Only this act moves a main-app account into a commune or to a different one (ADR
+  // 0045 §Chế độ app chính). false is the safe default: the session follows the remembered commune.
+  bool commune_confirmed = 4;
+
+  // The phone number Zalo attested in THIS request (getPhoneNumber token exchanged by the caller),
+  // normalised to "84…" digits. "" when no phone token was exchanged — the ordinary case; the app
+  // asks for the phone only when the citizen submits something (ADR 0045 §Số điện thoại).
+  // PERSONAL DATA (rule 3): crosses this boundary only when present, is never logged, never echoed.
+  string verified_phone = 5;
+
+  // The citizen's address as the bridge caller observed it, for the audit entry (rule 6,
+  // invariant 2). A claim by the caller; it is the only observer of that address.
+  string client_ip = 6;
+
+  // User agent or device label, truncated by the server. Diagnostics, never personal data.
+  string device = 7;
+
+  // The commune's DOMAIN, from the QR / URL parameter of the shared Mini App (owner's decision,
+  // 2026-09-27), e.g. "xa-a.vigov.vn". "" when the app was opened without one — the ordinary case.
+  // CLIENT-SUPPLIED DATA: on its own it enters nothing (rule 1, forbidden #2).
+  //
+  // A LOOKUP KEY, NEVER THE COMMUNE REFERENCE. The server asks platform ResolveHost which commune
+  // the host names, and from then on only that ULID exists: the session, the remembered commune and
+  // the audit entry carry the ULID; this string is not persisted anywhere, the audit entry included
+  // (rule 1, invariant 2 and forbidden #5). The reason is a merger: the operator re-points the
+  // absorbed commune's domain to the successor, so the same host names a different commune after
+  // that day — a stored host would silently re-attribute every record written before it.
+  //
+  // COUNTS ONLY in app mode MAIN together with `commune_confirmed`. IGNORED in app mode COMMUNE,
+  // confirmed or not — the app IS the commune — and ignored in MAIN without confirmation: a QR
+  // does not put anybody into any commune (ADR 0045). Ignored means not resolved; the SHAPE is
+  // still checked in every mode, because a malformed value is a wiring fault whatever the mode.
+  //
+  // SHAPE — refused with INVALID_ARGUMENT, never repaired. After trimming surrounding whitespace:
+  //   * a bare hostname: no scheme ("https://"), no port (":443"), no path, query, fragment or
+  //     userinfo — none of ":", "/", "?", "#", "@";
+  //   * lowercase ASCII only: [a-z0-9.-]. An internationalised name arrives in its "xn--" form.
+  //     Not case-folded here: one spelling means ResolveHost's own normalisation (lower-case,
+  //     strip port) is never what makes two different inputs name one commune;
+  //   * 1..253 characters, at least two labels, each label 1..63 characters, not starting or
+  //     ending with "-"; no leading, trailing or doubled ".";
+  //   * not an IP literal.
+  // Shape says nothing about existence: a well-formed host that no commune holds is the
+  // FAILED_PRECONDITION of the status table, the same answer as a deactivated commune or a platform
+  // address — a distinct code would let the caller probe which domains exist.
+  //
+  // Not personal data; may be logged.
+  string commune_host_hint = 8;
+}
+
+// The app modes of ADR 0044. English names: these describe the software, not an administrative
+// concept whose translation could assert a legal equivalence (ADR 0011).
+enum MiniAppMode {
+  MINI_APP_MODE_UNSPECIFIED = 0;
+  // The ViHAT-owned main app: commune only through a confirmed QR, remembered per account.
+  MINI_APP_MODE_MAIN = 1;
+  // A commune's dedicated app: the commune is fixed by the app id.
+  MINI_APP_MODE_COMMUNE = 2;
+}
+
+message OpenCitizenSessionResponse {
+  // The bearer token, returned ONCE; only its SHA-256 is stored. A CREDENTIAL (rule 8): the bridge
+  // caller relays it to the Mini App and never logs or persists it.
+  string session_token = 1;
+
+  // The session id — what an audit entry quotes and what revocation targets. Grants nothing.
+  string session_id = 2;
+
+  google.protobuf.Timestamp expires_at = 3;
+
+  // The commune of this session — an ANSWER the server computed. "" is a real answer: no commune
+  // (main app, never confirmed one, or the remembered one is no longer active). The Mini App then
+  // shows the introduction screen only; it NEVER substitutes a commune.
+  string tenant_id = 4;
+
+  // The commune's display name at issuance, for the header and the confirmation screen. Display
+  // only, point-in-time. "" exactly when `tenant_id` is "". Everything else about the commune
+  // (address, logo, hotline, hours) is a separate citizen read of the display profile owned by
+  // service-platform (ADR 0045 §Hồ sơ hiển thị) — deliberately not on this path.
+  string tenant_display_name = 5;
+
+  // Whether this session is bound to a verified citizen identity (a phone number verified now or
+  // previously for this Zalo account). false: the session may browse, and every route that reads
+  // or writes the citizen's own records refuses it (ADR 0045 §Phiên chưa có số điện thoại).
+  bool phone_verified = 6;
+
+  MiniAppMode app_mode = 7;
+}

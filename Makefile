@@ -20,7 +20,7 @@ GO ?= go
 ## "Permission denied", ở đúng cái máy không ai ngồi trước màn hình.
 VOI_ENV = sh ./scripts/voi-env.sh
 
-.PHONY: check fmt vet test test-csdl build run tidy migrate don-nhat-ky an-danh thu-zalo
+.PHONY: check fmt vet test test-csdl build run tidy proto migrate don-nhat-ky an-danh thu-zalo
 
 ## check CỐ Ý KHÔNG nạp .env.local: một phép kiểm đổi kết quả theo máy đang chạy
 ## là một phép kiểm không nói được điều gì. Test chạm CSDL tự SKIP khi thiếu
@@ -63,6 +63,13 @@ run:
 
 tidy:
 	@$(GO) mod tidy
+
+## proto — sinh lại internal/gen từ hợp đồng CHÉP của ViGov (proto/). Cần `buf`
+## và mạng (plugin chạy ở buf.build, phiên bản ghim trong proto/buf.gen.yaml).
+## KHÔNG nằm trong `check`: mã sinh ra được commit, nên `check` không cần mạng.
+## Đổi hợp đồng: chép lại NGUYÊN tệp nguồn (xem đầu tệp .proto), rồi chạy đích này.
+proto:
+	@cd proto && buf generate
 
 ## migrate — chạy lược đồ theo thứ tự. Cần psql và biến DATABASE_DSN.
 ## ON_ERROR_STOP=1: hỏng ở câu nào thì dừng ngay, không chạy tiếp nửa lược đồ.

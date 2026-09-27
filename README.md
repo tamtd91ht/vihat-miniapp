@@ -6,10 +6,18 @@ Kho này **độc lập hoàn toàn** với ViGov: không `replace`, không impo
 `go.mod`. Kiểm được:
 
 ```
-go list -deps ./...     # chỉ có: thư viện chuẩn, module này, pgx (+ x/text, x/sync do pgx kéo)
+go list -deps ./...     # thư viện chuẩn, module này, pgx (+ x/text, x/sync do pgx kéo),
+                        # grpc + protobuf (+ x/net, x/sys, genproto/rpc do grpc kéo)
 ```
 
 Đổi tên thư mục `vigov-v2` đi thì `go build ./...` vẫn chạy — không có đường dẫn nào trỏ sang đó.
+
+**Một điểm chạm có chủ đích với ViGov: cầu phiên công dân.** Hợp đồng
+`proto/vigov/identity/v1/citizen_session_bridge.proto` là **bản chép** từ kho ViGov (bên phục
+vụ sở hữu nó), kèm commit nguồn và SHA ở đầu tệp; mã client ở `internal/gen/` sinh từ bản chép
+ấy (`make proto`). Chép chứ không import: vẫn không `replace`, không go.mod chung.
+`internal/vigovcau/ban_chep_proto_test.go` làm `make check` đỏ khi thân bản chép bị sửa tay.
+grpc/protobuf vào `go.mod` chỉ vì cầu này.
 
 Phạm vi bước hiện tại đúng ba việc: **định danh · phiên đăng nhập · nhật ký đăng nhập**.
 
@@ -95,6 +103,37 @@ Lỗi trả về `{"message": "<câu tiếng Việt nói người dùng làm gì
 Không bao giờ có mã lỗi kỹ thuật, tên cột, thông điệp của Zalo hay số điện thoại trong thân
 phản hồi.
 
+### Cầu phiên ViGov — khi `VIGOV_CITIZEN_SESSION_BRIDGE_*` được đặt
+
+Cầu **tắt** (mặc định, hai biến trống): mọi thứ ở trên đứng nguyên; `communeHostHint` và
+`communeConfirmed` bị bỏ qua. Cầu **bật**: cùng tuyến, hành vi khác — tuyến phát **phiên công
+dân của ViGov** (gọi `OpenCitizenSession` trên cổng cầu của `service-identity`) và **không**
+phát phiên của kho này. Quyết định: ADR 0045 + 0047 ở kho ViGov. Mã: `internal/httpapi/sessions_vigov.go`.
+
+```
+POST /api/v1/sessions          (cầu BẬT)
+  gửi: {"accessToken": "...",            bắt buộc
+        "phoneToken": "...",             TUỲ CHỌN — chỉ khi công dân gửi thứ gì đó
+        "communeHostHint": "xa-a.vigov.vn",  tuỳ chọn, NGUYÊN VĂN tham số của QR
+        "communeConfirmed": true}        tuỳ chọn — công dân đã bấm xác nhận xã
+  201: {"vigovSession": {"token": "<bearer ViGov>", "expiresAt": "<RFC3339>",
+                          "tenantDisplayName": "<tên xã>", "phoneVerified": true}}
+       phiên không xã: không có token/expiresAt, tenantDisplayName = "" → màn giới thiệu
+```
+
+| Mã | Khi nào (cầu bật) |
+|---|---|
+| 400 | thiếu `accessToken` · ViGov trả `INVALID_ARGUMENT` (tên miền sai khuôn, xác nhận thiếu tên miền) |
+| 401 | Zalo từ chối token |
+| 422 | ViGov trả `FAILED_PRECONDITION` — app chưa gắn xã, xã ngừng hoạt động, tên miền không thuộc xã nào: **một câu** cho mọi nhánh |
+| 502 | không với tới Zalo |
+| 503 | ViGov không phục vụ được (thử lại một lần khi `ABORTED`, không thử lại mã nào khác) · khoá cầu sai · **chưa có cách lấy mã tài khoản Zalo** (NỢ #13) |
+
+Kho này **không biết xã**: tên miền đi nguyên văn, ViGov kiểm và quyết. Token ViGov chuyển
+**nguyên**, không lưu, không log; số điện thoại đi thẳng sang ViGov, không vào CSDL của kho này.
+Thân 201 dùng khoá `vigovSession` chứ không dùng `token`: hai phiên do hai hệ thống ký không
+được trùng tên khoá.
+
 Khoá `message` của thân lỗi **đã được phía Mini App xác nhận** là khoá họ đọc. Năm nhánh
 phía app — mã hết hạn (401) · Zalo không trả lời (502) · chưa khai host · không gọi được ·
 xong — khớp với bảng trên; hai nhánh "chưa khai host" và "không gọi được" xảy ra trước khi
@@ -115,6 +154,9 @@ internal/zalo/       wire.go = toàn bộ giao thức với Zalo, client.go = c�
 internal/phien/      token, băm token, từ vựng kết quả đăng nhập
 internal/store/      NƠI DUY NHẤT biết SQL
 internal/httpapi/    tuyến, CORS, giới hạn theo IP
+internal/vigovcau/   client cầu phiên công dân ViGov (gRPC, khoá cầu ở metadata)
+internal/gen/        mã SINH từ proto/ — không sửa tay, `make proto`
+proto/               hợp đồng CHÉP từ ViGov + cấu hình buf
 migrations/          lược đồ, chạy bằng `make migrate`
 deploy/              mẫu Kubernetes + BẢNG ÁNH XẠ biến → khoá k8s (deploy/README.md)
 scripts/voi-env.sh   nạp .env.local cho các đích `make` chạy tay
@@ -139,6 +181,8 @@ một lần, không bắt người vận hành khởi động lại năm lượt
 | `ZALO_MINIAPP_APP_ID` | có | một secret không kèm app id thì không ai xoay vòng hay chẩn đoán được; in ra lúc khởi động |
 | `ZALO_MINIAPP_SECRET_KEY` | có, **bí mật** | không có thì không đổi được `phoneToken`, tức không ai đăng nhập được |
 | `CORS_ALLOWED_ORIGINS` | có | thiếu thì nút đăng nhập chết im lặng trên máy thật |
+| `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | không, **đi cặp** | cổng cầu phiên của identity, danh sách `host:port`; một nửa cặp thì **không khởi động** |
+| `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | không, **đi cặp**, **bí mật** | ≥ 32 byte; **không bao giờ** là `GRPC_CALLER_KEY` của ViGov |
 | `TEST_DATABASE_DSN` | không | chỉ cho test chạm CSDL |
 
 Bí mật **không vào mã nguồn, không vào tài liệu, không vào `.env.example`** — mẫu chỉ có
@@ -572,3 +616,15 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
 10. **Chưa có middleware xác thực bearer token.** Bước này chỉ CẤP phiên; chưa tuyến nào
     tiêu thụ nó. Khi thêm tuyến cần đăng nhập: tra `phien` theo `token_bam`, loại phiên đã
     `het_han_luc` hoặc có `thu_hoi_luc`, và so sánh băm bằng hàm so sánh thời gian hằng định.
+13. **Cầu phiên ViGov: chưa lấy được MÃ TÀI KHOẢN ZALO — chặn cả đường cầu.** ADR 0045
+    UNKNOWN #2 (kho ViGov): chưa đo endpoint nào xác minh `accessToken` và trả mã tài khoản
+    mà không cần `phoneToken`; `/v2.0/me/info` đã đo chỉ trả số. Chỗ nối là
+    `internal/zalo/ma_tai_khoan.go`, cài đặt duy nhất `MaTaiKhoanChuaDo` **luôn từ chối** —
+    bật cầu hôm nay là **mọi** lượt đăng nhập trả 503 (log khởi động nói vậy).
+    → Đo bằng token thật theo khuôn `cmd/thu-zalo`, ghi hình dạng vào `wire.go`, rồi viết cài
+    đặt thật. **Không đoán tên endpoint hay tên trường.**
+14. **Cầu phiên ViGov: một App ID.** Chỉ có một cặp `ZALO_MINIAPP_APP_ID`/`_SECRET_KEY`; app
+    riêng của từng xã cần N cặp và cách chọn cặp theo yêu cầu (ADR 0045 UNKNOWN #1, chưa đo).
+15. **Cầu bật thì bề mặt `/api/v1/requests` mất phiên.** Nhánh cầu không phát phiên của kho
+    này, nên token cho `/requests` không còn được cấp. Chủ sản phẩm phải chốt: tách tuyến,
+    hay cấp cả hai phiên khi có `phoneToken`.
