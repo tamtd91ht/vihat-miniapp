@@ -1,8 +1,11 @@
 package zalo
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -22,7 +25,7 @@ import (
 //  QUAN SÁT TRỰC TIẾP — 20/09/2026, một lần chạy `cmd/thu-zalo` với token GIẢ
 //  và secret key GIẢ (đủ để máy chủ trả lời, không đủ để đi hết luồng):
 //   - GET https://graph.zalo.me/v2.0/me/info CÓ THẬT và trả HTTP 200.
-//   - Thân là JSON ĐÚNG hình dạng phanHoiLayThongTin bên dưới: đọc được cả
+//   - Thân là JSON ĐÚNG hình dạng phongBi bên dưới: đọc được cả
 //     "error" lẫn "message". Phong bì phản hồi vì thế KHÔNG còn là suy đoán.
 //   - Trả error=452, message "Session key invalid. This could be because the
 //     session key has an incorrect format, or because the user has revoked this
@@ -70,17 +73,78 @@ const (
 	HeaderAppSecretProof = "appsecret_proof"
 )
 
-// phanHoiLayThongTin là hình dạng JSON quan sát được:
+// phongBi là phong bì JSON quan sát được của /me/info (xem QUAN SÁT TRỰC TIẾP):
 //
-//	{"data": {"number": "84900000000"}, "error": 0, "message": "Success"}
+//	{"data": {...}, "error": 0, "message": "Success"}
 //
-// Khi lỗi, "data" có thể rỗng hoặc vắng mặt, "error" khác 0.
-type phanHoiLayThongTin struct {
-	Data struct {
-		Number string `json:"number"`
-	} `json:"data"`
+// Khi lỗi, "data" có thể rỗng hoặc vắng mặt, "error" khác 0. Phong bì là CHUNG
+// cho mọi thứ đổi qua /me/info; chỉ nội dung "data" khác nhau.
+type phongBi[T any] struct {
+	Data    *T     `json:"data"`
 	Error   int    `json:"error"`
 	Message string `json:"message"`
+}
+
+// duLieuSo — "data" của lượt đổi phoneToken:
+//
+//	{"number": "84900000000"}
+type duLieuSo struct {
+	Number string `json:"number"`
+}
+
+// ===========================================================================
+//  ĐỔI TOKEN CỦA getLocation() -> TOẠ ĐỘ
+//
+//  zmp-sdk getLocation() hôm nay chỉ trả một token; hai trường toạ độ phía SDK
+//  đã bị Zalo khai tử. Muốn có toạ độ thì máy chủ giữ secret key phải đổi token
+//  ấy — CÙNG đường dẫn, CÙNG ba header như đổi phoneToken, chỉ khác "code".
+//
+//  MỨC CHỨNG CỨ: THẤP.
+//  - Nguồn DUY NHẤT: bản cài đặt tham chiếu ở kho yêu cầu
+//    (vigov-require, apps/api/app/integrations/zalo/graph.py, hàm location):
+//    GET /me/info, header access_token + code + secret_key, đọc
+//    data.latitude / data.longitude, CHẤP NHẬN cả chuỗi lẫn số.
+//  - CHƯA từng chạy với Zalo thật từ kho này. cmd/thu-zalo chỉ thử phoneToken.
+//
+//  ĐIỀU CHƯA RÕ:
+//   5. Tên trường "latitude"/"longitude" và kiểu của chúng (chuỗi hay số) —
+//      docToaDo chịu cả hai và từ chối mọi thứ khác.
+//   6. Token vị trí dùng một lần và hết hạn sau khoảng 2 phút (theo chú thích
+//      của bản tham chiếu). Chưa rõ Zalo báo hết hạn bằng mã lỗi nào.
+// ===========================================================================
+
+// duLieuViTri — "data" của lượt đổi token vị trí:
+//
+//	{"latitude": "10.7769", "longitude": "106.7009"}   (hoặc số JSON)
+type duLieuViTri struct {
+	Latitude  json.RawMessage `json:"latitude"`
+	Longitude json.RawMessage `json:"longitude"`
+}
+
+// ErrViTriKhongHopLe — Zalo trả 200 và error=0 nhưng toạ độ không dùng được.
+var ErrViTriKhongHopLe = errors.New("zalo: toạ độ trả về không đúng định dạng mong đợi")
+
+// docToaDo đọc một toạ độ là số JSON HOẶC chuỗi chứa số.
+//
+// Thông điệp lỗi KHÔNG chứa giá trị: nó sẽ đi vào log, và giá trị là vị trí của
+// một người.
+func docToaDo(raw json.RawMessage) (float64, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return 0, ErrViTriKhongHopLe
+	}
+	if strings.HasPrefix(s, `"`) {
+		var chuoi string
+		if err := json.Unmarshal(raw, &chuoi); err != nil {
+			return 0, ErrViTriKhongHopLe
+		}
+		s = strings.TrimSpace(chuoi)
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, ErrViTriKhongHopLe
+	}
+	return v, nil
 }
 
 // ErrSoKhongHopLe — Zalo trả 200 và error=0 nhưng số không dùng được.

@@ -101,8 +101,12 @@ func chay(log *slog.Logger) error {
 		goiRa = congTongDai
 	}
 
-	api := httpapi.Moi(kho, zalo.New("", cfg.ZaloSecretKey), cfg, log).
-		VoiYeuCau(kho, yeucau.Moi(kho, goiRa, guiZNS, log))
+	// MỘT client Zalo cho cả đổi số điện thoại lẫn đổi vị trí: cùng secret, cùng
+	// lời gọi (internal/zalo, goiThongTin).
+	clientZalo := zalo.New("", cfg.ZaloSecretKey)
+	api := httpapi.Moi(kho, clientZalo, cfg, log).
+		VoiYeuCau(kho, yeucau.Moi(kho, goiRa, guiZNS, log)).
+		VoiViTri(clientZalo)
 
 	// Cầu phiên ViGov — chỉ khi cả hai biến có (config đã từ chối nửa cấu hình).
 	// In BẬT/TẮT và SỐ địa chỉ, không bao giờ in khoá.

@@ -1,4 +1,5 @@
-// Package zalo đổi phoneToken của Mini App lấy số điện thoại người dùng.
+// Package zalo đổi phoneToken của Mini App lấy số điện thoại người dùng, và
+// token của getLocation() lấy toạ độ.
 //
 // Toàn bộ hình dạng giao thức nằm ở wire.go, kèm mức chứng cứ và danh sách điều
 // chưa rõ. Tệp này chỉ lo cách gọi cho an toàn: timeout, chặn body khổng lồ, và
@@ -92,6 +93,15 @@ func (c *Client) LaySoDienThoai(ctx context.Context, accessToken, phoneToken str
 // phục vụ lấy SoChuan qua LaySoDienThoai; đường chẩn đoán lấy HÌNH DẠNG của số
 // qua ChanDoan. Không có đường thứ ba.
 type ketQuaGoi struct {
+	ketQuaThongTin
+
+	SoTho   string // nguyên văn Zalo trả
+	SoChuan string // sau ChuanHoaSo; rỗng khi không lấy được
+}
+
+// ketQuaThongTin là phần của một lời gọi /me/info KHÔNG phụ thuộc thứ được
+// đổi (số điện thoại hay vị trí): phong bì, mã HTTP, thời gian, lỗi đã phân loại.
+type ketQuaThongTin struct {
 	GuiProof   bool
 	HTTPStatus int
 	ThoiGian   time.Duration
@@ -100,22 +110,70 @@ type ketQuaGoi struct {
 	ZaloError   int
 	ZaloMessage string
 
-	SoTho   string // nguyên văn Zalo trả
-	SoChuan string // sau ChuanHoaSo; rỗng khi không lấy được
-
 	Loi error // đã phân loại: ErrTokenKhongHopLe / ErrKhongVoiToiZalo / nil
 }
 
-// goi là ĐƯỜNG DUY NHẤT chạm máy chủ Zalo trong kho này.
-//
-// Một đường, hai người dùng (LaySoDienThoai và ChanDoan) là điều kiện để một
-// lần chạy thật của cmd/thu-zalo nói được điều gì đó về đường phục vụ. Hai bản
-// sao của cùng lời gọi thì lần thử thật chỉ chứng minh cho chính bản sao ấy.
+// goi đổi phoneToken: gọi chung qua goiThongTin, rồi chuẩn hoá số.
 func (c *Client) goi(ctx context.Context, accessToken, phoneToken string) ketQuaGoi {
-	kq := ketQuaGoi{GuiProof: c.GuiAppSecretProof}
+	var data duLieuSo
+	kq := ketQuaGoi{ketQuaThongTin: goiThongTin(ctx, c, accessToken, phoneToken, &data)}
+	kq.SoTho = data.Number
+	if kq.Loi != nil {
+		return kq
+	}
 
-	if accessToken == "" || phoneToken == "" {
-		kq.Loi = fmt.Errorf("thiếu accessToken hoặc phoneToken: %w", ErrTokenKhongHopLe)
+	so, err := ChuanHoaSo(data.Number)
+	if err != nil {
+		kq.Loi = fmt.Errorf("%w: %w", ErrKhongVoiToiZalo, err)
+		return kq
+	}
+	kq.SoChuan = so
+	return kq
+}
+
+// LayViTri đổi token của getLocation() lấy (vĩ độ, kinh độ).
+//
+// KHÔNG lưu, KHÔNG log tham số lẫn kết quả: toạ độ là nơi một người đang đứng —
+// dữ liệu cá nhân theo đúng nghĩa của Nghị định 13/2023. Lỗi trả về không bao
+// giờ mang toạ độ, token hay body của Zalo.
+//
+// Toạ độ sai còn tệ hơn không có toạ độ: nó đặt một phản ánh vào chỗ không ai
+// phản ánh gì. Vì thế mọi thứ không đọc được, hoặc nằm ngoài trái đất, đều thành
+// ErrKhongVoiToiZalo chứ không được đoán.
+func (c *Client) LayViTri(ctx context.Context, accessToken, locationToken string) (float64, float64, error) {
+	var data duLieuViTri
+	kq := goiThongTin(ctx, c, accessToken, locationToken, &data)
+	if kq.Loi != nil {
+		return 0, 0, kq.Loi
+	}
+	viDo, err := docToaDo(data.Latitude)
+	if err != nil {
+		return 0, 0, fmt.Errorf("vĩ độ: %w: %w", ErrKhongVoiToiZalo, err)
+	}
+	kinhDo, err := docToaDo(data.Longitude)
+	if err != nil {
+		return 0, 0, fmt.Errorf("kinh độ: %w: %w", ErrKhongVoiToiZalo, err)
+	}
+	// So sánh với NaN luôn sai, nên "NaN" cũng rơi vào nhánh này.
+	if !(viDo >= -90 && viDo <= 90 && kinhDo >= -180 && kinhDo <= 180) {
+		return 0, 0, fmt.Errorf("%w: %w", ErrKhongVoiToiZalo, ErrViTriKhongHopLe)
+	}
+	return viDo, kinhDo, nil
+}
+
+// goiThongTin là ĐƯỜNG DUY NHẤT chạm máy chủ Zalo trong kho này.
+//
+// Một đường, ba người dùng (LaySoDienThoai, ChanDoan, LayViTri) là điều kiện để
+// một lần chạy thật của cmd/thu-zalo nói được điều gì đó về đường phục vụ. Hai
+// bản sao của cùng lời gọi thì lần thử thật chỉ chứng minh cho chính bản sao ấy.
+//
+// data là nơi nhận trường "data" của phong bì; kiểu của nó là thứ DUY NHẤT khác
+// nhau giữa đổi số điện thoại và đổi vị trí.
+func goiThongTin[T any](ctx context.Context, c *Client, accessToken, code string, data *T) ketQuaThongTin {
+	kq := ketQuaThongTin{GuiProof: c.GuiAppSecretProof}
+
+	if accessToken == "" || code == "" {
+		kq.Loi = fmt.Errorf("thiếu accessToken hoặc code: %w", ErrTokenKhongHopLe)
 		return kq
 	}
 
@@ -125,7 +183,7 @@ func (c *Client) goi(ctx context.Context, accessToken, phoneToken string) ketQua
 		return kq
 	}
 	req.Header.Set(HeaderAccessToken, accessToken)
-	req.Header.Set(HeaderCode, phoneToken)
+	req.Header.Set(HeaderCode, code)
 	req.Header.Set(HeaderSecretKey, c.secretKey.Lo())
 	if c.GuiAppSecretProof {
 		req.Header.Set(HeaderAppSecretProof, TinhAppSecretProof(accessToken, c.secretKey))
@@ -156,14 +214,14 @@ func (c *Client) goi(ctx context.Context, accessToken, phoneToken string) ketQua
 		return kq
 	}
 
-	var ph phanHoiLayThongTin
+	ph := phongBi[T]{Data: data}
 	if err := json.Unmarshal(body, &ph); err != nil {
 		// Cố tình KHÔNG kèm body vào lỗi.
 		kq.Loi = fmt.Errorf("phản hồi không phải JSON như mong đợi: %w", ErrKhongVoiToiZalo)
 		return kq
 	}
 	kq.CoThanJSON = true
-	kq.ZaloError, kq.ZaloMessage, kq.SoTho = ph.Error, ph.Message, ph.Data.Number
+	kq.ZaloError, kq.ZaloMessage = ph.Error, ph.Message
 
 	if ph.Error != 0 {
 		// Chỉ ghi MÃ lỗi (số), không ghi message của Zalo — message là chuỗi ta
@@ -171,13 +229,6 @@ func (c *Client) goi(ctx context.Context, accessToken, phoneToken string) ketQua
 		kq.Loi = fmt.Errorf("Zalo báo lỗi mã %d: %w", ph.Error, ErrTokenKhongHopLe)
 		return kq
 	}
-
-	so, err := ChuanHoaSo(ph.Data.Number)
-	if err != nil {
-		kq.Loi = fmt.Errorf("%w: %w", ErrKhongVoiToiZalo, err)
-		return kq
-	}
-	kq.SoChuan = so
 	return kq
 }
 

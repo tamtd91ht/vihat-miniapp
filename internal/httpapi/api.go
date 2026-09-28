@@ -66,6 +66,11 @@ type Server struct {
 	cau      CauPhienViGov
 	maZalo   MaTaiKhoanZalo
 	appIDCau string
+
+	// Hai trường của tuyến đổi vị trí — xem `VoiViTri`. nil là chưa lắp ráp:
+	// tuyến vẫn gắn và trả 503.
+	doiViTri     DoiViTriZalo
+	gioiHanViTri *GioiHanIP
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -126,6 +131,9 @@ func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appI
 //	POST /api/v1/sessions — công khai vì đây CHÍNH LÀ tuyến đăng nhập: người gọi
 //	                        chưa có gì để xác thực. Thứ bảo vệ nó là token của
 //	                        Zalo (chỉ Zalo cấp được) + giới hạn theo IP.
+//	POST /api/v1/location — công khai, cùng lớp chắn với /sessions (token của
+//	                        Zalo + giới hạn theo IP, xô riêng). Đổi token của
+//	                        getLocation() lấy toạ độ; không lưu gì — vi_tri.go.
 //	GET  /healthz         — công khai cho thăm dò sức khoẻ của hạ tầng. Phản hồi
 //	                        không mang thông tin nội bộ: chỉ "ok" hoặc 503.
 //	     /webhooks/zalo   — công khai vì Zalo gọi từ hạ tầng của họ, không mang
@@ -147,6 +155,7 @@ func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appI
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/sessions", s.taoPhien)
+	mux.HandleFunc("/api/v1/location", s.viTri)
 	mux.HandleFunc("/api/v1/requests", s.gacYeuCau(s.requests))
 	mux.HandleFunc("/healthz", s.healthz)
 	s.mountWebhookZalo(mux)

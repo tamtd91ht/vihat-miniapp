@@ -202,3 +202,119 @@ func TestChuanHoaSo(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// LayViTri — đổi token của getLocation() lấy toạ độ.
+//
+// Cùng lời cảnh báo ở đầu tệp, nặng hơn một bậc: hình dạng "data" của lượt đổi
+// vị trí CHƯA từng được quan sát trực tiếp (wire.go, MỨC CHỨNG CỨ: THẤP).
+// ---------------------------------------------------------------------------
+
+const (
+	viTriGiaLap = "location-token-gia-lap"
+	// Toạ độ giả — giữa Biển Đông, không trỏ vào nhà ai.
+	viDoGia   = "12.3456789"
+	kinhDoGia = "112.3456789"
+)
+
+func TestLayViTri_ThanhCong_CungMotLoiGoiVoiSoDienThoai(t *testing.T) {
+	var duongDan, method, query string
+	var hdr http.Header
+	c := mayChuGia(t, func(w http.ResponseWriter, r *http.Request) {
+		duongDan, method, hdr, query = r.URL.Path, r.Method, r.Header.Clone(), r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"data":{"latitude":"` + viDoGia + `","longitude":"` + kinhDoGia + `"},"error":0,"message":"Success"}`))
+	})
+
+	viDo, kinhDo, err := c.LayViTri(context.Background(), tokenGiaLap, viTriGiaLap)
+	if err != nil {
+		t.Fatalf("mong không lỗi, nhận: %s", err)
+	}
+	if viDo != 12.3456789 || kinhDo != 112.3456789 {
+		t.Errorf("toạ độ = (%v, %v), mong (12.3456789, 112.3456789)", viDo, kinhDo)
+	}
+	if method != http.MethodGet || duongDan != DuongDanLayThongTin {
+		t.Errorf("gọi %s %s, mong GET %s", method, duongDan, DuongDanLayThongTin)
+	}
+	if hdr.Get(HeaderAccessToken) != tokenGiaLap ||
+		hdr.Get(HeaderCode) != viTriGiaLap ||
+		hdr.Get(HeaderSecretKey) != khoaGiaLap {
+		t.Error("ba header của giao thức chưa được đặt đúng")
+	}
+	if query != "" {
+		t.Errorf("URL mang query %q — token/bí mật phải đi bằng header", query)
+	}
+}
+
+// Bản tham chiếu đọc được cả chuỗi lẫn số; ở đây cũng vậy.
+func TestLayViTri_ChapNhanSoJSON(t *testing.T) {
+	c := mayChuGia(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"latitude":-12.5,"longitude":-100},"error":0}`))
+	})
+	viDo, kinhDo, err := c.LayViTri(context.Background(), tokenGiaLap, viTriGiaLap)
+	if err != nil || viDo != -12.5 || kinhDo != -100 {
+		t.Fatalf("= (%v, %v, %v), mong (-12.5, -100, nil)", viDo, kinhDo, err)
+	}
+}
+
+func TestLayViTri_PhanLoaiLoi(t *testing.T) {
+	cases := []struct {
+		ten  string
+		than string
+		ma   int
+		mong error
+	}{
+		{"error khác 0", `{"data":{},"error":-201,"message":"Invalid code"}`, 200, ErrTokenKhongHopLe},
+		{"HTTP 500", ``, 500, ErrKhongVoiToiZalo},
+		{"body không phải JSON", `<html>lỗi</html>`, 200, ErrKhongVoiToiZalo},
+		{"không có data", `{"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"data null", `{"data":null,"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"thiếu kinh độ", `{"data":{"latitude":"10.1"},"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"vĩ độ rỗng", `{"data":{"latitude":"","longitude":"106.1"},"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"vĩ độ rác", `{"data":{"latitude":"abc","longitude":"106.1"},"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"vĩ độ NaN", `{"data":{"latitude":"NaN","longitude":"106.1"},"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"vĩ độ ngoài trái đất", `{"data":{"latitude":"91","longitude":"106.1"},"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"kinh độ ngoài trái đất", `{"data":{"latitude":"10","longitude":"-180.5"},"error":0}`, 200, ErrKhongVoiToiZalo},
+		{"toạ độ là object", `{"data":{"latitude":{},"longitude":"106.1"},"error":0}`, 200, ErrKhongVoiToiZalo},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ten, func(t *testing.T) {
+			c := mayChuGia(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.ma)
+				_, _ = w.Write([]byte(tc.than))
+			})
+			_, _, err := c.LayViTri(context.Background(), tokenGiaLap, viTriGiaLap)
+			if !errors.Is(err, tc.mong) {
+				t.Fatalf("lỗi = %v, mong %v", err, tc.mong)
+			}
+		})
+	}
+}
+
+func TestLayViTri_ThieuThamSo_KhongGoiZalo(t *testing.T) {
+	c := mayChuGia(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("không được gọi sang Zalo khi thiếu tham số")
+	})
+	if _, _, err := c.LayViTri(context.Background(), "", viTriGiaLap); !errors.Is(err, ErrTokenKhongHopLe) {
+		t.Errorf("thiếu accessToken: lỗi = %v", err)
+	}
+	if _, _, err := c.LayViTri(context.Background(), tokenGiaLap, ""); !errors.Is(err, ErrTokenKhongHopLe) {
+		t.Errorf("thiếu token vị trí: lỗi = %v", err)
+	}
+}
+
+// Toạ độ là vị trí của một người: lỗi đi vào log nên lỗi không được mang toạ
+// độ, token hay secret key — kể cả khi chính toạ độ là thứ làm hỏng.
+func TestLayViTri_LoiKhongMangToaDoHayBiMat(t *testing.T) {
+	c := mayChuGia(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"latitude":"` + viDoGia + `","longitude":"999` + kinhDoGia + `"},"error":0,"message":"` + viDoGia + `"}`))
+	})
+	_, _, err := c.LayViTri(context.Background(), tokenGiaLap, viTriGiaLap)
+	if err == nil {
+		t.Fatal("mong có lỗi")
+	}
+	for _, cam := range []string{viDoGia, kinhDoGia, tokenGiaLap, viTriGiaLap, khoaGiaLap} {
+		if strings.Contains(err.Error(), cam) {
+			t.Errorf("thông điệp lỗi rò %q: %s", cam, err)
+		}
+	}
+}

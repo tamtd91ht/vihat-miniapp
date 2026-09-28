@@ -61,6 +61,10 @@ POST /api/v1/sessions          công khai, không cần xác thực
   gửi: {"accessToken": "<getAccessToken()>", "phoneToken": "<token của getPhoneNumber()>"}
   201: {"token": "<bearer>", "expiresAt": "<RFC3339>"}
 
+POST /api/v1/location          công khai, cùng lớp chắn với /sessions (xô giới hạn RIÊNG)
+  gửi: {"accessToken": "<getAccessToken()>", "locationToken": "<token của getLocation()>"}
+  200: {"latitude": <số>, "longitude": <số>}      KHÔNG lưu gì — xem bảng lỗi bên dưới
+
 GET  /healthz                  công khai, cho thăm dò sức khoẻ
   200: {"trang_thai": "ok"}        503 khi không chạm được CSDL
 
@@ -102,6 +106,36 @@ Lỗi trả về `{"message": "<câu tiếng Việt nói người dùng làm gì
 
 Không bao giờ có mã lỗi kỹ thuật, tên cột, thông điệp của Zalo hay số điện thoại trong thân
 phản hồi.
+
+### `POST /api/v1/location` — đổi token của `getLocation()` lấy toạ độ
+
+zmp-sdk `getLocation()` chỉ còn trả một token (toạ độ phía SDK đã bị khai tử). Máy chủ đổi
+token ấy bằng **cùng** lời gọi `GET graph.zalo.me/v2.0/me/info` như `phoneToken`, cùng
+secret key (`internal/zalo`, `LayViTri`). **Không lưu, không log** token lẫn toạ độ: hỏi
+một người đang đứng đâu không phải là ghi lại nơi họ đứng.
+
+Không đòi phiên của kho này: công dân đi cầu ViGov cầm phiên ViGov, và họ chính là người
+cần vị trí cho phản ánh. Lớp chắn giống `/sessions`: token do Zalo cấp + **10 lượt / 5 phút
+/ IP, xô riêng** (hết hạn mức vị trí không chặn đăng nhập).
+
+Lỗi của tuyến này mang **thêm** khoá `code` — `{"message": "...", "code": "..."}` — để phía
+app chọn nhánh mà không so câu chữ. Các tuyến khác giữ nguyên `{"message"}`.
+
+| Mã | `code` | Khi nào |
+|---|---|---|
+| 400 | `invalid_request` | thân không đọc được, thiếu `accessToken`/`locationToken` |
+| 405 | `method_not_allowed` | không phải POST (`Allow: POST`) |
+| 429 | `rate_limited` | vượt 10 lượt / 5 phút / IP |
+| 502 | `zalo_location_unavailable` | **mọi** thất bại của Zalo: token bị từ chối, không với tới, trả toạ độ không đọc được hoặc ngoài trái đất |
+| 503 | `unavailable` | chưa gọi `VoiViTri` ở `cmd/server` |
+
+Vì sao Zalo từ chối token là **502, không 401** như `/sessions`: ở lượt này `error != 0` không
+tách được "access token hết hạn" với "token vị trí hết hạn" (dùng một lần, ~2 phút); 401 bị
+phía app đọc thành "đăng nhập lại" — sai với ca hay gặp hơn. Việc người dân làm tiếp là như
+nhau: thử lại, hoặc tự gõ địa chỉ.
+
+⚠ Hình dạng `data.latitude` / `data.longitude` **CHƯA đo với Zalo thật** — mức chứng cứ THẤP,
+nguồn duy nhất là bản tham chiếu ở kho yêu cầu (xem `internal/zalo/wire.go`, ĐIỀU CHƯA RÕ #5–#6).
 
 ### Cầu phiên ViGov — khi `VIGOV_CITIZEN_SESSION_BRIDGE_*` được đặt
 
@@ -638,3 +672,7 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
     không có tên miền (xã đến từ App ID, ADR 0047), nên theo luật này rơi về phiên thương mại.
     Ngày có app riêng (cùng lúc với #14), nhánh cầu phải chọn theo App ID đã xác minh — chủ dự
     án chốt trước khi làm.
+16. **Đổi token vị trí (`POST /api/v1/location`) — CHƯA ĐO với Zalo thật.** Tên trường
+    `data.latitude`/`data.longitude`, kiểu (chuỗi hay số) và mã lỗi khi token vị trí hết hạn
+    đều lấy từ bản tham chiếu ở kho yêu cầu, không từ quan sát (`wire.go`, ĐIỀU CHƯA RÕ #5–#6).
+    `cmd/thu-zalo` chưa có nhánh vị trí. Đóng bằng một lần gọi thật với token lấy từ điện thoại.

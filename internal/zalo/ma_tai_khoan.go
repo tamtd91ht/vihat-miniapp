@@ -15,7 +15,7 @@ import (
 //      Lời gọi duy nhất đã đo (GET /v2.0/me/info, wire.go) đòi cả hai token.
 //   2. MÃ TÀI KHOẢN ZALO (user id) của token ấy. Hình dạng phản hồi đã quan sát
 //      của /v2.0/me/info chỉ có `data.number` — không có trường mã nào
-//      (wire.go, phanHoiLayThongTin).
+//      (wire.go, phongBi / duLieuSo).
 //
 //  Đó là UNKNOWN #2 của ADR 0045 phía ViGov: endpoint nào trả mã tài khoản mà
 //  không cần quyền số điện thoại, và mã ấy theo từng app hay dùng chung.
