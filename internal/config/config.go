@@ -85,6 +85,22 @@ type Config struct {
 	// VigovCauKhoa: khoá cầu gửi ở metadata `x-vigov-bridge-key`. KHÔNG BAO GIỜ
 	// là GRPC_CALLER_KEY của ViGov — khoá ấy mở mọi RPC của mọi service ViGov.
 	VigovCauKhoa secret.Secret
+
+	// AppXa — app RIÊNG của từng xã (ADR 0044/0045/0047 phía ViGov): mỗi phần tử
+	// một cặp App ID → secret. Cặp ZALO_MINIAPP_APP_ID / _SECRET_KEY ở trên vẫn
+	// là app CHUNG và KHÔNG nằm trong danh sách này.
+	//
+	// Yêu cầu mang một App ID trong danh sách thì mọi lượt đổi với Zalo dùng
+	// secret của app ấy, và đăng nhập đi cầu ViGov (httpapi, sessions.go). Rỗng
+	// là không có app riêng nào — hành vi y như trước.
+	AppXa []AppZalo
+}
+
+// AppZalo — một Mini App và secret của nó. AppID không phải bí mật (được phép
+// in ra log vận hành); SecretKey thì có.
+type AppZalo struct {
+	AppID     string
+	SecretKey secret.Secret
 }
 
 // CauPhienBat — cầu phiên ViGov có được cấu hình hay không. Nap đã bảo đảm
@@ -112,6 +128,15 @@ const (
 	// dân), không nói cụm hay số thứ tự máy chủ nào.
 	EnvVigovCauDiaChi = "VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS"
 	EnvVigovCauKhoa   = "VIGOV_CITIZEN_SESSION_BRIDGE_KEY"
+
+	// EnvAppXa — N cặp App ID → secret của app riêng từng xã, MỘT biến, dạng
+	// `<app_id>=<secret>,<app_id>=<secret>`. Cùng tiền tố với cặp app chung.
+	//
+	// Vì sao MỘT biến chứ không phải biến đánh số (`..._1`, `..._2`): thêm một xã
+	// thì chỉ sửa một khoá trong Secret, không sửa deployment.yaml, không phát
+	// hành lại — và không có biến số thứ tự nào để một ngày bị bỏ sót (luật tên
+	// theo VAI TRÒ, không theo thứ tự). Cả biến là BÍ MẬT: nó chứa secret.
+	EnvAppXa = "ZALO_MINIAPP_COMMUNE_APP_SECRETS"
 
 	// VigovCauKhoaToiThieu — độ dài tối thiểu (byte) của khoá cầu. TRÙNG với
 	// core/grpcx.BridgeKeyMinLen phía ViGov: máy chủ từ chối khởi động với khoá
@@ -200,6 +225,21 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 		}
 		cfg.VigovCauDiaChi = ds
 		cfg.VigovCauKhoa = secret.Secret(khoaCau)
+	}
+
+	// App riêng của xã: tuỳ chọn. Có mà cầu TẮT thì TỪ CHỐI KHỞI ĐỘNG — cùng lý
+	// do nửa nhóm cầu: app riêng chỉ đăng nhập được qua cầu, nên người vận hành
+	// sẽ tin đã bật đăng nhập cho các xã ấy trong khi không có đường nào.
+	if rawApp := tuyChon(EnvAppXa); rawApp != "" {
+		apps, err := phanTichAppXa(rawApp, cfg.ZaloAppID)
+		if err != nil {
+			loi = append(loi, EnvAppXa+": "+err.Error())
+		}
+		if diaChiCau == "" || khoaCau == "" {
+			loi = append(loi, EnvAppXa+" có giá trị nhưng cầu phiên ViGov chưa cấu hình ("+
+				EnvVigovCauDiaChi+", "+EnvVigovCauKhoa+") — app riêng chỉ đăng nhập được qua cầu")
+		}
+		cfg.AppXa = apps
 	}
 
 	if len(thieu) > 0 {
@@ -297,6 +337,64 @@ func phanTichDiaChiCum(raw string) ([]string, error) {
 			return nil, fmt.Errorf("%q có cổng không hợp lệ", d)
 		}
 		out = append(out, d)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("danh sách rỗng")
+	}
+	return out, nil
+}
+
+// appIDHopLe — App ID của Zalo Mini App là một dãy chữ số.
+//
+// Kiểm khuôn không phải vì thẩm mỹ: App ID ĐƯỢC IN ra log (khởi động, mỗi lượt
+// đi cầu). Một cặp gõ ngược (`<secret>=<app_id>`) mà lọt qua thì secret bị in
+// ra log ở lượt đầu tiên. Secret của Zalo có chữ cái, nên khuôn chữ số chặn
+// đúng lỗi ấy.
+func appIDHopLe(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// phanTichAppXa tách `<app_id>=<secret>,<app_id>=<secret>`.
+//
+// Tách ở dấu `=` ĐẦU TIÊN: App ID không bao giờ chứa `=`, còn secret thì có thể
+// (base64). Dấu phẩy là ký tự ngăn cặp, nên secret KHÔNG được chứa dấu phẩy —
+// nói trong .env.example.
+//
+// Thông điệp lỗi chỉ nêu VỊ TRÍ phần tử (thứ mấy), không bao giờ nêu giá trị:
+// một phần tử hỏng có thể là một secret bị gõ nhầm chỗ. Ngoại lệ duy nhất là
+// App ID đã qua kiểm khuôn chữ số — nó không phải bí mật.
+func phanTichAppXa(raw, appIDChung string) ([]AppZalo, error) {
+	var out []AppZalo
+	daCo := map[string]bool{}
+	for i, phan := range strings.Split(raw, ",") {
+		phan = strings.TrimSpace(phan)
+		if phan == "" {
+			continue
+		}
+		thu := i + 1
+		appID, khoa, co := strings.Cut(phan, "=")
+		appID, khoa = strings.TrimSpace(appID), strings.TrimSpace(khoa)
+		switch {
+		case !co || khoa == "":
+			return nil, fmt.Errorf("phần tử thứ %d không có dạng <app_id>=<secret>", thu)
+		case !appIDHopLe(appID):
+			return nil, fmt.Errorf("phần tử thứ %d: app id phải là dãy chữ số (cặp gõ ngược?)", thu)
+		case appID == appIDChung:
+			// Hai secret cho một App ID: không ai biết cái nào đang được dùng.
+			return nil, fmt.Errorf("app id %s trùng %s — app chung không khai lại ở đây", appID, EnvZaloAppID)
+		case daCo[appID]:
+			return nil, fmt.Errorf("app id %s khai hai lần", appID)
+		}
+		daCo[appID] = true
+		out = append(out, AppZalo{AppID: appID, SecretKey: secret.Secret(khoa)})
 	}
 	if len(out) == 0 {
 		return nil, errors.New("danh sách rỗng")

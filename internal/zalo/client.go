@@ -1,5 +1,8 @@
-// Package zalo đổi phoneToken của Mini App lấy số điện thoại người dùng, và
-// token của getLocation() lấy toạ độ.
+// Package zalo đổi phoneToken của Mini App lấy số điện thoại người dùng, token
+// của getLocation() lấy toạ độ, và accessToken lấy mã tài khoản Zalo.
+//
+// Một Client giữ secret của ĐÚNG MỘT Mini App. N app thì N Client — chọn
+// Client nào cho một yêu cầu là việc của internal/httpapi.
 //
 // Toàn bộ hình dạng giao thức nằm ở wire.go, kèm mức chứng cứ và danh sách điều
 // chưa rõ. Tệp này chỉ lo cách gọi cho an toàn: timeout, chặn body khổng lồ, và
@@ -161,7 +164,9 @@ func (c *Client) LayViTri(ctx context.Context, accessToken, locationToken string
 	return viDo, kinhDo, nil
 }
 
-// goiThongTin là ĐƯỜNG DUY NHẤT chạm máy chủ Zalo trong kho này.
+// goiThongTin là ĐƯỜNG DUY NHẤT chạm /me/info trong kho này. (Đường thứ hai
+// chạm Zalo là LayMaTaiKhoan — endpoint khác, không secret, ma_tai_khoan.go;
+// cmd/thu-zalo CHƯA đi qua nó.)
 //
 // Một đường, ba người dùng (LaySoDienThoai, ChanDoan, LayViTri) là điều kiện để
 // một lần chạy thật của cmd/thu-zalo nói được điều gì đó về đường phục vụ. Hai

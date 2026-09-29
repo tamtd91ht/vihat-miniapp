@@ -11,19 +11,27 @@ import (
 	"github.com/vihat/vihat-miniapp/internal/zalo"
 )
 
+// nhanhCau — app của lượt đi cầu này (chọn ở sessions.go).
+type nhanhCau struct {
+	appID    string       // App ID gửi sang ViGov
+	doiSo    DoiTokenZalo // bộ đổi mang secret của CHÍNH app ấy
+	appRieng bool         // app riêng của xã: phoneToken bắt buộc — app_zalo.go điểm 2
+}
+
 // taoPhienViGov — nhánh của POST /api/v1/sessions khi cầu phiên ViGov BẬT VÀ
-// thân mang communeHostHint khác rỗng (chọn nhánh: sessions.go). Không mang nó
-// thì cầu bật vẫn phát phiên thương mại — nên "app mở âm thầm" ở điểm 1 dưới
-// đây hôm nay KHÔNG tới được nhánh này.
+// (a) yêu cầu đến từ app riêng của xã, hoặc (b) app chung mang communeHostHint
+// khác rỗng (chọn nhánh: sessions.go).
 //
-// Kho này xác minh token Zalo bằng secret của app, rồi gọi cầu phiên của ViGov
-// (ADR 0045 bước 3–8) và chuyển NGUYÊN token phiên ViGov cho Mini App.
+// Kho này xác minh token Zalo với Zalo, rồi gọi cầu phiên của ViGov (ADR 0045
+// bước 3–8) và chuyển NGUYÊN token phiên ViGov cho Mini App.
 //
 // KHÁC nhánh cũ ở bốn điểm, cả bốn có chủ đích:
 //
-//  1. phoneToken TUỲ CHỌN. App mở âm thầm chỉ có accessToken; số điện thoại chỉ
-//     xin khi công dân gửi thứ gì đó (ADR 0045 câu 2). Có phoneToken thì số đi
-//     sang ViGov; không có thì trường số RỖNG — không bao giờ một số cũ.
+//  1. phoneToken TUỲ CHỌN với app chung. App mở âm thầm chỉ có accessToken; số
+//     điện thoại chỉ xin khi công dân gửi thứ gì đó (ADR 0045 câu 2). Có
+//     phoneToken thì số đi sang ViGov; không có thì trường số RỖNG — không bao
+//     giờ một số cũ. Với app RIÊNG thì BẮT BUỘC: lượt đổi phoneToken bằng secret
+//     của app ấy là thứ duy nhất xác minh App ID (app_zalo.go).
 //  2. KHÔNG phát phiên của kho này và KHÔNG lưu số: số điện thoại công dân đi
 //     thẳng sang ViGov, không dừng lại trong CSDL thương mại. Token ViGov không
 //     lưu, không log (bước 8).
@@ -36,15 +44,21 @@ import (
 //
 // Thứ tự gọi Zalo: MÃ TÀI KHOẢN TRƯỚC, SỐ SAU. phoneToken rất có thể dùng một
 // lần; hỏng ở bước mã mà đã tiêu phoneToken là bắt công dân cấp quyền lại.
-func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCauTaoPhien, ip *netip.Addr) {
+func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCauTaoPhien, ip *netip.Addr, nh nhanhCau) {
 	ctx := r.Context()
 
 	if yc.AccessToken == "" {
 		s.traLoi(w, http.StatusBadRequest, loiYeuCauHong)
 		return
 	}
-	if s.maZalo == nil || s.appIDCau == "" {
-		s.log.Error("cầu phiên ViGov lắp ráp thiếu — VoiCauPhienViGov không có nguồn mã tài khoản hoặc app id")
+	if nh.appRieng && yc.PhoneToken == "" {
+		// Không có lượt đổi có secret nào để xác minh App ID client khai. Từ chối
+		// TRƯỚC mọi lời gọi ra ngoài; không tin lời khai (app_zalo.go điểm 2).
+		s.traLoi(w, http.StatusBadRequest, loiCanSoDeXacMinhApp)
+		return
+	}
+	if s.maZalo == nil || nh.appID == "" || nh.doiSo == nil {
+		s.log.Error("cầu phiên ViGov lắp ráp thiếu — không có nguồn mã tài khoản, app id hoặc bộ đổi của app")
 		s.traLoi(w, http.StatusServiceUnavailable, loiCauTamNgung)
 		return
 	}
@@ -61,11 +75,6 @@ func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCau
 		case errors.Is(err, zalo.ErrTokenKhongHopLe):
 			s.ghiThatBai(r, phien.KetQuaTokenZaloHong, "zalo_tu_choi_token", ip)
 			s.traLoi(w, http.StatusUnauthorized, loiTokenHetHan)
-		case errors.Is(err, zalo.ErrMaTaiKhoanChuaDo):
-			// Lỗi PHÍA TA, đúng như thiết kế hôm nay — xem internal/zalo/ma_tai_khoan.go.
-			s.log.Error("cầu phiên ViGov từ chối: chưa có cách đã đo để lấy mã tài khoản Zalo (ADR 0045 UNKNOWN #2)")
-			s.ghiThatBai(r, phien.KetQuaLoiHeThong, "cau_chua_do_ma_zalo", ip)
-			s.traLoi(w, http.StatusServiceUnavailable, loiCauTamNgung)
 		default:
 			s.log.Error("không lấy được mã tài khoản Zalo", "loi", err.Error())
 			s.ghiThatBai(r, phien.KetQuaLoiZalo, "khong_voi_toi_zalo", ip)
@@ -74,11 +83,12 @@ func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCau
 		return
 	}
 
-	// Số điện thoại: CHỈ khi lượt này có phoneToken. Biến này là chỗ duy nhất
-	// số xuất hiện, và nó đi thẳng vào YeuCau.
+	// Số điện thoại: CHỈ khi lượt này có phoneToken, đổi bằng secret của ĐÚNG
+	// app (nh.doiSo). Với app riêng, lượt này thành công CHÍNH LÀ bước xác minh
+	// App ID. Biến `so` là chỗ duy nhất số xuất hiện; nó đi thẳng vào YeuCau.
 	var so string
 	if yc.PhoneToken != "" {
-		so, err = s.zalo.LaySoDienThoai(ctx, yc.AccessToken, yc.PhoneToken)
+		so, err = nh.doiSo.LaySoDienThoai(ctx, yc.AccessToken, yc.PhoneToken)
 		if err != nil {
 			switch {
 			case errors.Is(err, zalo.ErrTokenKhongHopLe):
@@ -98,7 +108,7 @@ func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCau
 		ipChuoi = ip.String()
 	}
 	kq, err := s.cau.MoPhien(ctx, vigovcau.YeuCau{
-		AppID:       s.appIDCau,
+		AppID:       nh.appID,
 		MaTaiKhoan:  maTaiKhoan,
 		SoDaXacThuc: so,
 		IPKhach:     ipChuoi,
@@ -107,14 +117,15 @@ func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCau
 		DaXacNhanXa: yc.CommuneConfirmed,
 	})
 	if err != nil {
-		s.traLoiLoiCau(w, r, err, ip)
+		s.traLoiLoiCau(w, r, err, ip, nh.appID)
 		return
 	}
 
 	// Chỉ MÃ PHIÊN (không cấp quyền gì) và app id. Không token, không mã tài
 	// khoản, không số, không tên miền xã (nó lộ người này đang làm việc với xã nào).
-	s.log.Info("mở phiên công dân ViGov", "app_id", s.appIDCau, "phien_vigov_id", kq.PhienID,
-		"co_xa", kq.TenXa != "", "da_xac_thuc_so", kq.DaXacThucSo, "gui_so", so != "")
+	s.log.Info("mở phiên công dân ViGov", "app_id", nh.appID, "app_rieng", nh.appRieng,
+		"phien_vigov_id", kq.PhienID, "co_xa", kq.TenXa != "", "da_xac_thuc_so", kq.DaXacThucSo,
+		"gui_so", so != "")
 
 	ph := phienViGov{
 		Token:              kq.Token,
@@ -138,14 +149,14 @@ func (s *Server) taoPhienViGov(w http.ResponseWriter, r *http.Request, yc yeuCau
 //	ErrSaiKhoaCau  -> 503  triển khai sai. Log Error kèm chữ CẢNH BÁO để nổ chuông.
 //	còn lại        -> 503  "không có gì được phát" (hợp đồng). Không bao giờ lùi
 //	                       về một phiên của kho này.
-func (s *Server) traLoiLoiCau(w http.ResponseWriter, r *http.Request, err error, ip *netip.Addr) {
+func (s *Server) traLoiLoiCau(w http.ResponseWriter, r *http.Request, err error, ip *netip.Addr, appID string) {
 	switch {
 	case errors.Is(err, vigovcau.ErrYeuCauSai):
 		s.log.Error("cầu phiên ViGov từ chối yêu cầu như lỗi nối dây", "loi", err.Error())
 		s.ghiThatBai(r, phien.KetQuaLoiHeThong, "cau_yeu_cau_sai", ip)
 		s.traLoi(w, http.StatusBadRequest, loiYeuCauHong)
 	case errors.Is(err, vigovcau.ErrChuaSanSang):
-		s.log.Warn("cầu phiên ViGov: app hoặc xã chưa sẵn sàng", "app_id", s.appIDCau)
+		s.log.Warn("cầu phiên ViGov: app hoặc xã chưa sẵn sàng", "app_id", appID)
 		s.ghiThatBai(r, phien.KetQuaLoiHeThong, "cau_chua_san_sang", ip)
 		s.traLoi(w, http.StatusUnprocessableEntity, loiCauChuaSanSang)
 	case errors.Is(err, vigovcau.ErrSaiKhoaCau):
@@ -189,4 +200,7 @@ type phienViGov struct {
 const (
 	loiCauTamNgung    = "Chức năng đăng nhập đang tạm ngưng. Vui lòng thử lại sau ít phút."
 	loiCauChuaSanSang = "Ứng dụng chưa sẵn sàng cho địa phương này. Vui lòng quét lại mã QR do địa phương cung cấp hoặc thử lại sau."
+	// App riêng của xã gửi đăng nhập không kèm phoneToken. Người dân làm được
+	// đúng một việc: cho phép chia sẻ số điện thoại rồi thử lại.
+	loiCanSoDeXacMinhApp = "Vui lòng cho phép ứng dụng dùng số điện thoại Zalo của bạn để đăng nhập, rồi thử lại."
 )

@@ -10,7 +10,7 @@ import (
 )
 
 // ===========================================================================
-//  HÌNH DẠNG WIRE CỦA LỜI GỌI ĐỔI phoneToken -> SỐ ĐIỆN THOẠI
+//  HÌNH DẠNG WIRE CỦA CÁC LỜI GỌI SANG ZALO — trước hết: phoneToken -> SỐ
 //
 //  ĐÂY LÀ TỆP DUY NHẤT MÔ TẢ GIAO THỨC VỚI ZALO. Sửa giao thức thì sửa ở đây,
 //  không rải hằng chuỗi sang chỗ khác.
@@ -119,6 +119,49 @@ type duLieuSo struct {
 type duLieuViTri struct {
 	Latitude  json.RawMessage `json:"latitude"`
 	Longitude json.RawMessage `json:"longitude"`
+}
+
+// ===========================================================================
+//  accessToken -> MÃ TÀI KHOẢN ZALO (không secret, không phoneToken)
+//
+//  GET /v2.0/me?fields=id, header access_token. Phản hồi phẳng, KHÔNG có phong
+//  bì "data":
+//
+//	{"id": "1234567890123456789", "error": 0, "message": "Success"}
+//
+//  Khi hỏng: HTTP 200, "error" khác 0 (bản tham chiếu nêu -216 cho token hỏng).
+//
+//  MỨC CHỨNG CỨ: THẤP.
+//  - Nguồn DUY NHẤT: bản cài đặt tham chiếu ở kho yêu cầu (vigov-require,
+//    commit 0053854, apps/api/app/integrations/zalo/graph.py:113-134, hàm
+//    verify), theo quyết định của chủ dự án 29/09/2026. Bản ấy ghi "đối chiếu
+//    với khai báo kiểu của zmp-sdk 2.53.0 và docs.zaloplatforms.com".
+//  - CHƯA từng chạy với Zalo thật từ kho này; cmd/thu-zalo chưa có nhánh này.
+//
+//  ĐIỀU CHƯA RÕ:
+//   7. "id" là CHUỖI hay SỐ JSON. Bản tham chiếu gọi str(...) nên chịu cả hai;
+//      docMaTaiKhoan chịu cả hai và KHÔNG BAO GIỜ đi qua float64.
+//   8. Bảng mã lỗi của lời gọi này — chỉ biết -216 từ bản tham chiếu, chưa tự
+//      tay thấy mã nào. Mọi error != 0 coi là token hỏng, như /me/info.
+// ===========================================================================
+
+// DuongDanMaTaiKhoan — GET, KHÔNG body; chỉ tham số fields=id trên URL (không
+// phải bí mật, không phải dữ liệu cá nhân).
+const DuongDanMaTaiKhoan = "/v2.0/me"
+
+// ThamSoTruong / TruongMaTaiKhoan — CHỈ xin "id". Xin thêm name/picture thì
+// Zalo từ chối cả lời gọi từ IP ngoài Việt Nam (bản tham chiếu, hàm verify).
+const (
+	ThamSoTruong     = "fields"
+	TruongMaTaiKhoan = "id"
+)
+
+// phanHoiMaTaiKhoan — thân phẳng của /v2.0/me. ID là RawMessage để đọc được cả
+// chuỗi lẫn số mà không làm tròn (ĐIỀU CHƯA RÕ #7).
+type phanHoiMaTaiKhoan struct {
+	ID      json.RawMessage `json:"id"`
+	Error   int             `json:"error"`
+	Message string          `json:"message"`
 }
 
 // ErrViTriKhongHopLe — Zalo trả 200 và error=0 nhưng toạ độ không dùng được.

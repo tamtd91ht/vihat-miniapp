@@ -25,6 +25,11 @@ type yeuCauTaoPhien struct {
 	// nhận đi NGUYÊN VĂN sang ViGov, máy chủ ấy kiểm và quyết.
 	CommuneHostHint  string `json:"communeHostHint"`
 	CommuneConfirmed bool   `json:"communeConfirmed"`
+
+	// AppID — App ID của Mini App đang chạy (client đọc từ môi trường Zalo).
+	// CHỈ chọn secret; không cấp gì cho tới khi một lượt đổi có secret của app
+	// ấy thành công — xem app_zalo.go. Vắng = app chung.
+	AppID string `json:"appId"`
 }
 
 // taoPhien — POST /api/v1/sessions. CÔNG KHAI: đây chính là tuyến đăng nhập,
@@ -61,25 +66,43 @@ func (s *Server) taoPhien(w http.ResponseWriter, r *http.Request) {
 		s.traLoi(w, http.StatusBadRequest, loiYeuCauHong)
 		return
 	}
-	// CHỌN NHÁNH THEO YÊU CẦU, không theo cấu hình (chủ dự án chốt 27/09/2026).
-	// Cầu bật mà nuốt MỌI lượt đăng nhập thì phần thương mại (Tư vấn / Yêu cầu
-	// của tôi — /api/v1/requests) mất phiên: thân cầu không có `token` gốc.
+	// CHỌN NHÁNH THEO YÊU CẦU, không theo cấu hình (chủ dự án chốt 27/09/2026,
+	// nhánh app riêng chốt 29/09/2026). Cầu bật mà nuốt MỌI lượt đăng nhập thì
+	// phần thương mại (Tư vấn / Yêu cầu của tôi — /api/v1/requests) mất phiên:
+	// thân cầu không có `token` gốc.
 	//
-	//   communeHostHint KHÁC RỖNG -> cầu ViGov. Đó là công dân vừa xác nhận xã ở
-	//                                nửa ViGov của citizen-app.
-	//   còn lại                   -> phiên thương mại, y như khi cầu tắt.
+	//   appId là app RIÊNG của xã      -> cầu ViGov, gửi App ID của app ấy;
+	//                                     ViGov tra xã từ App ID (chế độ riêng).
+	//                                     Không cần tên miền. Xác minh App ID:
+	//                                     app_zalo.go.
+	//   appId lạ                        -> 422, không lùi về app chung.
+	//   app chung + communeHostHint     -> cầu ViGov với App ID app chung — công
+	//                                     dân vừa xác nhận xã từ QR.
+	//   app chung, không communeHostHint -> phiên thương mại, y như khi cầu tắt.
 	//
 	// "Khác rỗng" là so NGUYÊN VĂN, không trim: kho này không diễn giải tên miền.
 	// Một chuỗi sai khuôn (kể cả toàn khoảng trắng) vẫn đi cầu như trước, và
 	// ViGov trả INVALID_ARGUMENT -> 400.
-	//
-	// ⚠ App RIÊNG của xã (ADR 0044/0047) mở KHÔNG có tên miền — xã đến từ App
-	// ID — nên theo luật này nó rơi về phiên thương mại. Hôm nay chưa có app
-	// riêng nào đi qua kho này (một cặp app id/secret, ADR 0045 UNKNOWN #1). Ngày
-	// có, nhánh cầu phải được chọn theo APP ID đã xác minh, không theo thân yêu
-	// cầu — chưa làm, cần chủ dự án quyết.
+	switch loai, zApp := s.chonApp(yc.AppID); loai {
+	case appLa:
+		s.log.Warn("đăng nhập từ một App ID chưa cấu hình — từ chối (giá trị không log: do client đặt)")
+		s.ghiThatBai(r, phien.KetQuaLoiHeThong, "app_id_chua_cau_hinh", ip)
+		s.traLoi(w, http.StatusUnprocessableEntity, loiCauChuaSanSang)
+		return
+	case appRieng:
+		if s.cau == nil {
+			// config.Nap không cho khởi động với app riêng mà cầu tắt; tới được
+			// đây là lắp ráp sai. KHÔNG BAO GIỜ lùi về phiên thương mại.
+			s.log.Error("app riêng của xã nhưng cầu phiên ViGov chưa lắp ráp — thiếu VoiCauPhienViGov", "app_id", yc.AppID)
+			s.ghiThatBai(r, phien.KetQuaLoiHeThong, "cau_chua_lap_rap", ip)
+			s.traLoi(w, http.StatusServiceUnavailable, loiCauTamNgung)
+			return
+		}
+		s.taoPhienViGov(w, r, yc, ip, nhanhCau{appID: yc.AppID, doiSo: zApp, appRieng: true})
+		return
+	}
 	if s.cau != nil && yc.CommuneHostHint != "" {
-		s.taoPhienViGov(w, r, yc, ip)
+		s.taoPhienViGov(w, r, yc, ip, nhanhCau{appID: s.appIDCau, doiSo: s.zalo})
 		return
 	}
 	if yc.AccessToken == "" || yc.PhoneToken == "" {

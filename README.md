@@ -58,11 +58,13 @@ Phía Mini App đã viết theo khuôn này; giữ đúng.
 
 ```
 POST /api/v1/sessions          công khai, không cần xác thực
-  gửi: {"accessToken": "<getAccessToken()>", "phoneToken": "<token của getPhoneNumber()>"}
+  gửi: {"accessToken": "<getAccessToken()>", "phoneToken": "<token của getPhoneNumber()>",
+        "appId": "<App ID của Mini App đang chạy>"}      appId TUỲ CHỌN — vắng = app chung
   201: {"token": "<bearer>", "expiresAt": "<RFC3339>"}
 
 POST /api/v1/location          công khai, cùng lớp chắn với /sessions (xô giới hạn RIÊNG)
-  gửi: {"accessToken": "<getAccessToken()>", "locationToken": "<token của getLocation()>"}
+  gửi: {"accessToken": "<getAccessToken()>", "locationToken": "<token của getLocation()>",
+        "appId": "<App ID>"}                             appId TUỲ CHỌN — vắng = app chung
   200: {"latitude": <số>, "longitude": <số>}      KHÔNG lưu gì — xem bảng lỗi bên dưới
 
 GET  /healthz                  công khai, cho thăm dò sức khoẻ
@@ -110,8 +112,9 @@ phản hồi.
 ### `POST /api/v1/location` — đổi token của `getLocation()` lấy toạ độ
 
 zmp-sdk `getLocation()` chỉ còn trả một token (toạ độ phía SDK đã bị khai tử). Máy chủ đổi
-token ấy bằng **cùng** lời gọi `GET graph.zalo.me/v2.0/me/info` như `phoneToken`, cùng
-secret key (`internal/zalo`, `LayViTri`). **Không lưu, không log** token lẫn toạ độ: hỏi
+token ấy bằng **cùng** lời gọi `GET graph.zalo.me/v2.0/me/info` như `phoneToken`, bằng
+secret key **của app mà `appId` chỉ tới** (`internal/zalo`, `LayViTri`; chọn app:
+`internal/httpapi/app_zalo.go`). **Không lưu, không log** token lẫn toạ độ: hỏi
 một người đang đứng đâu không phải là ghi lại nơi họ đứng.
 
 Không đòi phiên của kho này: công dân đi cầu ViGov cầm phiên ViGov, và họ chính là người
@@ -125,6 +128,7 @@ app chọn nhánh mà không so câu chữ. Các tuyến khác giữ nguyên `{"
 |---|---|---|
 | 400 | `invalid_request` | thân không đọc được, thiếu `accessToken`/`locationToken` |
 | 405 | `method_not_allowed` | không phải POST (`Allow: POST`) |
+| 422 | `app_not_configured` | `appId` không phải app chung và không có trong `ZALO_MINIAPP_COMMUNE_APP_SECRETS` |
 | 429 | `rate_limited` | vượt 10 lượt / 5 phút / IP |
 | 502 | `zalo_location_unavailable` | **mọi** thất bại của Zalo: token bị từ chối, không với tới, trả toạ độ không đọc được hoặc ngoài trái đất |
 | 503 | `unavailable` | chưa gọi `VoiViTri` ở `cmd/server` |
@@ -140,21 +144,33 @@ nguồn duy nhất là bản tham chiếu ở kho yêu cầu (xem `internal/zalo
 ### Cầu phiên ViGov — khi `VIGOV_CITIZEN_SESSION_BRIDGE_*` được đặt
 
 Cầu **tắt** (mặc định, hai biến trống): mọi thứ ở trên đứng nguyên; `communeHostHint` và
-`communeConfirmed` bị bỏ qua. Cầu **bật**: nhánh được chọn **theo từng yêu cầu** (chủ dự án
-chốt 27/09/2026, `internal/httpapi/sessions.go`):
+`communeConfirmed` bị bỏ qua (app riêng thì không có — config từ chối khởi động). Cầu
+**bật**: nhánh được chọn **theo từng yêu cầu** (chủ dự án chốt 27/09/2026, nhánh app riêng
+chốt 29/09/2026, `internal/httpapi/sessions.go`):
 
 | Thân yêu cầu | Nhánh |
 |---|---|
-| `communeHostHint` **khác rỗng** (so nguyên văn, không trim) | **phiên công dân của ViGov** (gọi `OpenCitizenSession` trên cổng cầu của `service-identity`); **không** phát phiên của kho này |
-| không có / rỗng | **phiên của kho này**, y như cầu tắt — Tư vấn / Yêu cầu của tôi giữ đăng nhập |
+| `appId` là một app **riêng** của xã (`ZALO_MINIAPP_COMMUNE_APP_SECRETS`) | **phiên công dân của ViGov**, gửi **App ID của app riêng** — ViGov tra xã từ App ID (chế độ riêng). **Không cần** `communeHostHint`. `phoneToken` **BẮT BUỘC** (xem "App ID đã xác minh" dưới) |
+| `appId` lạ (không phải app chung, không trong danh sách) | **422**, không gọi Zalo, không lùi về app chung |
+| app chung (`appId` vắng hoặc = `ZALO_MINIAPP_APP_ID`) + `communeHostHint` **khác rỗng** (so nguyên văn, không trim) | **phiên công dân của ViGov** với App ID app chung (gọi `OpenCitizenSession` trên cổng cầu của `service-identity`); **không** phát phiên của kho này |
+| app chung, không có / rỗng `communeHostHint` | **phiên của kho này**, y như cầu tắt — Tư vấn / Yêu cầu của tôi giữ đăng nhập |
 
 Quyết định: ADR 0045 + 0047 ở kho ViGov. Mã: `internal/httpapi/sessions_vigov.go`.
+
+**"App ID đã xác minh" nghĩa là gì ở kho này** — nguồn duy nhất: khối đầu
+`internal/httpapi/app_zalo.go`. Tóm một dòng: Zalo không có lời gọi nào trả "token này của
+app nào", nên `appId` do client khai **chỉ chọn secret**, và App ID coi là đã xác minh khi
+lượt đổi `phoneToken` **bằng secret của chính app ấy thành công**. Điều đó chỉ đúng nếu Zalo
+từ chối secret sai app — **chưa đo** (ADR 0045 UNKNOWN #1, NỢ #14).
 
 ```
 POST /api/v1/sessions          (cầu BẬT, có communeHostHint)
   gửi: {"accessToken": "...",            bắt buộc
-        "phoneToken": "...",             TUỲ CHỌN — chỉ khi công dân gửi thứ gì đó
-        "communeHostHint": "xa-a.vigov.vn",  BẮT BUỘC để đi cầu, NGUYÊN VĂN tham số của QR
+        "phoneToken": "...",             TUỲ CHỌN với app chung — chỉ khi công dân gửi thứ gì đó;
+                                         BẮT BUỘC với app riêng
+        "appId": "...",                  tuỳ chọn — App ID của Mini App đang chạy; vắng = app chung
+        "communeHostHint": "xa-a.vigov.vn",  app chung: BẮT BUỘC để đi cầu, NGUYÊN VĂN tham số
+                                         của QR; app riêng: không cần (chuyển nguyên văn nếu có)
         "communeConfirmed": true}        tuỳ chọn — công dân đã bấm xác nhận xã
   201: {"vigovSession": {"token": "<bearer ViGov>", "expiresAt": "<RFC3339>",
                           "tenantDisplayName": "<tên xã>", "phoneVerified": true,
@@ -165,11 +181,11 @@ POST /api/v1/sessions          (cầu BẬT, có communeHostHint)
 
 | Mã | Khi nào (cầu bật) |
 |---|---|
-| 400 | thiếu `accessToken` · ViGov trả `INVALID_ARGUMENT` (tên miền sai khuôn, xác nhận thiếu tên miền) |
-| 401 | Zalo từ chối token |
-| 422 | ViGov trả `FAILED_PRECONDITION` — app chưa gắn xã, xã ngừng hoạt động, tên miền không thuộc xã nào: **một câu** cho mọi nhánh |
-| 502 | không với tới Zalo |
-| 503 | ViGov không phục vụ được (thử lại một lần khi `ABORTED`, không thử lại mã nào khác) · khoá cầu sai · **chưa có cách lấy mã tài khoản Zalo** (NỢ #13) |
+| 400 | thiếu `accessToken` · app riêng mà thiếu `phoneToken` · ViGov trả `INVALID_ARGUMENT` (tên miền sai khuôn, xác nhận thiếu tên miền) |
+| 401 | Zalo từ chối token (ở bước mã tài khoản, hoặc lượt đổi `phoneToken` bằng secret của app) |
+| 422 | `appId` lạ · ViGov trả `FAILED_PRECONDITION` — app chưa gắn xã (thiếu dòng `mini_app`), xã ngừng hoạt động, tên miền không thuộc xã nào: **một câu** cho mọi nhánh |
+| 502 | không với tới Zalo, hoặc Zalo trả mã tài khoản không đọc được |
+| 503 | ViGov không phục vụ được (thử lại một lần khi `ABORTED`, không thử lại mã nào khác) · khoá cầu sai |
 
 Kho này **không biết xã**: tên miền đi nguyên văn, ViGov kiểm và quyết. Token ViGov chuyển
 **nguyên**, không lưu, không log; số điện thoại đi thẳng sang ViGov, không vào CSDL của kho này.
@@ -225,6 +241,7 @@ một lần, không bắt người vận hành khởi động lại năm lượt
 | `CORS_ALLOWED_ORIGINS` | có | thiếu thì nút đăng nhập chết im lặng trên máy thật |
 | `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | không, **đi cặp** | cổng cầu phiên của identity, danh sách `host:port`; một nửa cặp thì **không khởi động** |
 | `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | không, **đi cặp**, **bí mật** | ≥ 32 byte; **không bao giờ** là `GRPC_CALLER_KEY` của ViGov |
+| `ZALO_MINIAPP_COMMUNE_APP_SECRETS` | không, **bí mật** | app **riêng** của xã: `<app_id>=<secret>,<app_id>=<secret>`. Có giá trị mà cầu tắt thì **không khởi động**; App ID phải là chữ số, không trùng app chung, không lặp |
 | `TEST_DATABASE_DSN` | không | chỉ cho test chạm CSDL |
 
 Bí mật **không vào mã nguồn, không vào tài liệu, không vào `.env.example`** — mẫu chỉ có
@@ -658,21 +675,33 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
 10. **Chưa có middleware xác thực bearer token.** Bước này chỉ CẤP phiên; chưa tuyến nào
     tiêu thụ nó. Khi thêm tuyến cần đăng nhập: tra `phien` theo `token_bam`, loại phiên đã
     `het_han_luc` hoặc có `thu_hoi_luc`, và so sánh băm bằng hàm so sánh thời gian hằng định.
-13. **Cầu phiên ViGov: chưa lấy được MÃ TÀI KHOẢN ZALO — chặn cả đường cầu.** ADR 0045
-    UNKNOWN #2 (kho ViGov): chưa đo endpoint nào xác minh `accessToken` và trả mã tài khoản
-    mà không cần `phoneToken`; `/v2.0/me/info` đã đo chỉ trả số. Chỗ nối là
-    `internal/zalo/ma_tai_khoan.go`, cài đặt duy nhất `MaTaiKhoanChuaDo` **luôn từ chối** —
-    bật cầu hôm nay là **mọi** lượt đi cầu (có `communeHostHint`) trả 503 (log khởi động nói vậy).
-    → Đo bằng token thật theo khuôn `cmd/thu-zalo`, ghi hình dạng vào `wire.go`, rồi viết cài
-    đặt thật. **Không đoán tên endpoint hay tên trường.**
-14. **Cầu phiên ViGov: một App ID.** Chỉ có một cặp `ZALO_MINIAPP_APP_ID`/`_SECRET_KEY`; app
-    riêng của từng xã cần N cặp và cách chọn cặp theo yêu cầu (ADR 0045 UNKNOWN #1, chưa đo).
-15. ~~Cầu bật thì bề mặt `/api/v1/requests` mất phiên~~ — **ĐÃ SỬA 27/09/2026**: chọn nhánh
-    theo `communeHostHint` (`internal/httpapi/sessions.go`). **Còn mở:** app RIÊNG của xã mở
-    không có tên miền (xã đến từ App ID, ADR 0047), nên theo luật này rơi về phiên thương mại.
-    Ngày có app riêng (cùng lúc với #14), nhánh cầu phải chọn theo App ID đã xác minh — chủ dự
-    án chốt trước khi làm.
+13. **Cầu phiên ViGov: MÃ TÀI KHOẢN ZALO — ĐÃ CÀI 29/09/2026, CHƯA ĐO.** Chủ dự án chốt làm
+    theo bản tham chiếu ở kho yêu cầu (`vigov-require` commit `0053854`,
+    `apps/api/app/integrations/zalo/graph.py:113-134`): `GET /v2.0/me?fields=id`, header
+    `access_token`, không secret, chỉ xin `id`, 6 giây (`internal/zalo/ma_tai_khoan.go`). Hình
+    dạng và mức chứng cứ THẤP: `wire.go`, ĐIỀU CHƯA RÕ #7–#8.
+    → **Còn nợ:** một lần gọi thật với token thật từ điện thoại (`cmd/thu-zalo` chưa có nhánh
+    này); ghi `id` là chuỗi hay số, và mã lỗi thấy được, vào `wire.go`.
+14. **Cầu phiên ViGov: N App ID — ĐÃ CÀI 29/09/2026; CÁCH XÁC MINH CHƯA ĐO.** N cặp app riêng
+    ở `ZALO_MINIAPP_COMMUNE_APP_SECRETS`; `appId` trong thân chọn secret; mọi lượt đổi có secret
+    (số, vị trí) dùng secret của app ấy. "App ID đã xác minh" = lượt đổi `phoneToken` bằng
+    secret của app ấy thành công (`internal/httpapi/app_zalo.go`). **Chỉ đúng nếu Zalo từ chối
+    token của app X đổi bằng secret app Y** — ADR 0045 UNKNOWN #1, **chưa đo có kiểm soát**, và
+    chứng cứ đang có trái chiều (ADR 0047 §6: đổi token app xã bằng secret app chung "đã chạy
+    được" 27/09; lỗi 502 của `/api/v1/location` ở app xã thì gợi ý ngược lại).
+    → Đo: trên điện thoại, mở app riêng, lấy `accessToken` + `phoneToken`, đổi bằng secret **app
+    chung**; một cặp token mới, đổi bằng secret **app riêng**. Lượt đầu mà thành công thì cách
+    xác minh này **không** xác minh gì — phải báo chủ dự án trước khi phát hành app riêng.
+    Hệ quả nếu vậy (ADR 0045:286): người khai `appId` xã B vào được xã B, không đọc được hồ sơ
+    của ai khác. Cái giá đã chọn: đăng nhập từ app riêng **luôn cần `phoneToken`**, kể cả lần
+    mở lại — không có lượt đổi có secret nào khác để xác minh.
+15. ~~Cầu bật thì bề mặt `/api/v1/requests` mất phiên~~ — **ĐÃ SỬA 27/09/2026** (chọn nhánh theo
+    `communeHostHint`). ~~App riêng của xã rơi về phiên thương mại~~ — **ĐÃ SỬA 29/09/2026**:
+    `appId` là app riêng thì đi cầu với App ID của app ấy, không cần tên miền
+    (`internal/httpapi/sessions.go`). Phụ thuộc #14 cho phần "đã xác minh".
 16. **Đổi token vị trí (`POST /api/v1/location`) — CHƯA ĐO với Zalo thật.** Tên trường
     `data.latitude`/`data.longitude`, kiểu (chuỗi hay số) và mã lỗi khi token vị trí hết hạn
     đều lấy từ bản tham chiếu ở kho yêu cầu, không từ quan sát (`wire.go`, ĐIỀU CHƯA RÕ #5–#6).
     `cmd/thu-zalo` chưa có nhánh vị trí. Đóng bằng một lần gọi thật với token lấy từ điện thoại.
+    Từ 29/09/2026 tuyến đổi bằng secret của app mà `appId` chỉ tới — lỗi 502 ở app riêng
+    (đổi bằng secret app chung) phải hết; **chưa thử trên máy thật**.

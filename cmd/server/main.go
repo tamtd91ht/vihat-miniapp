@@ -101,15 +101,27 @@ func chay(log *slog.Logger) error {
 		goiRa = congTongDai
 	}
 
-	// MỘT client Zalo cho cả đổi số điện thoại lẫn đổi vị trí: cùng secret, cùng
-	// lời gọi (internal/zalo, goiThongTin).
+	// MỘT client Zalo cho app CHUNG, dùng cho cả đổi số điện thoại lẫn đổi vị
+	// trí: cùng secret, cùng lời gọi (internal/zalo, goiThongTin).
 	clientZalo := zalo.New("", cfg.ZaloSecretKey)
 	api := httpapi.Moi(kho, clientZalo, cfg, log).
 		VoiYeuCau(kho, yeucau.Moi(kho, goiRa, guiZNS, log)).
 		VoiViTri(clientZalo)
 
-	// Cầu phiên ViGov — chỉ khi cả hai biến có (config đã từ chối nửa cấu hình).
-	// In BẬT/TẮT và SỐ địa chỉ, không bao giờ in khoá.
+	// App RIÊNG của xã: mỗi app một client mang secret của chính nó. In SỐ app
+	// và App ID (không phải bí mật — config đã kiểm khuôn chữ số để một cặp gõ
+	// ngược không đưa secret vào dòng này), không bao giờ in secret.
+	appXa := make(map[string]httpapi.ZaloCuaApp, len(cfg.AppXa))
+	dsAppID := make([]string, 0, len(cfg.AppXa))
+	for _, a := range cfg.AppXa {
+		appXa[a.AppID] = zalo.New("", a.SecretKey)
+		dsAppID = append(dsAppID, a.AppID)
+	}
+	api.VoiAppXa(appXa)
+	log.Info("app riêng của xã", "so_app", len(dsAppID), "app_id", dsAppID)
+
+	// Cầu phiên ViGov — chỉ khi cả hai biến có (config đã từ chối nửa cấu hình,
+	// và app riêng khi cầu tắt). In BẬT/TẮT và SỐ địa chỉ, không bao giờ in khoá.
 	log.Info("cầu phiên ViGov", "bat", cfg.CauPhienBat(), "so_dia_chi", len(cfg.VigovCauDiaChi))
 	if cfg.CauPhienBat() {
 		cau, err := vigovcau.Mo(cfg.VigovCauDiaChi, cfg.VigovCauKhoa)
@@ -117,11 +129,14 @@ func chay(log *slog.Logger) error {
 			return err
 		}
 		defer func() { _ = cau.Dong() }()
-		// ⚠ Nguồn mã tài khoản Zalo hôm nay là MaTaiKhoanChuaDo — LUÔN từ chối
-		// (ADR 0045 UNKNOWN #2). Bật cầu lúc này nghĩa là MỌI lượt đăng nhập
-		// trả 503; nói ra ngay trong log khởi động thay vì để người dùng báo.
-		log.Warn("cầu phiên ViGov BẬT nhưng chưa có cách đã đo để lấy mã tài khoản Zalo — mọi lượt POST /api/v1/sessions sẽ trả 503 cho tới khi đo xong (xem internal/zalo/ma_tai_khoan.go)")
-		api.VoiCauPhienViGov(cau, zalo.MaTaiKhoanChuaDo{}, cfg.ZaloAppID)
+		// Mã tài khoản Zalo: GET /v2.0/me?fields=id, không secret — lời gọi ấy
+		// như nhau cho mọi app, nên client app chung đủ dùng. ⚠ Hình dạng lấy từ
+		// bản tham chiếu, CHƯA đo từ kho này; và việc xác minh App ID của app
+		// riêng dựa trên giả định Zalo từ chối secret sai app (ADR 0045 UNKNOWN
+		// #1, chưa đo). Nói ra ở log khởi động, không để người dùng phát hiện.
+		log.Warn("cầu phiên ViGov BẬT — mã tài khoản Zalo lấy qua /v2.0/me?fields=id (hình dạng CHƯA đo với Zalo thật); " +
+			"app riêng xác minh App ID bằng lượt đổi phoneToken với secret của app ấy (UNKNOWN #1 CHƯA đo) — xem internal/httpapi/app_zalo.go")
+		api.VoiCauPhienViGov(cau, clientZalo, cfg.ZaloAppID)
 	}
 
 	srv := &http.Server{

@@ -149,6 +149,14 @@ spec:
                   name: vihat-miniapp-bi-mat
                   key: VIGOV_CITIZEN_SESSION_BRIDGE_KEY
                   optional: true
+            # App rieng cua tung xa — tuy chon; co ma cau tat thi config.Nap
+            # tu choi khoi dong (app rieng chi dang nhap duoc qua cau).
+            - name: ZALO_MINIAPP_COMMUNE_APP_SECRETS
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: ZALO_MINIAPP_COMMUNE_APP_SECRETS
+                  optional: true
 
           # ===================================================================
           #  THĂM DÒ — /healthz CÓ CHẠM CSDL, nên nó trả 503 khi mất kết nối.

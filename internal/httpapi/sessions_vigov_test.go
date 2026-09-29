@@ -327,16 +327,15 @@ func TestPhienViGov_MaLoiCau(t *testing.T) {
 	}
 }
 
-// UNKNOWN #2: chỗ nối hôm nay luôn từ chối. Đường cầu phải DỪNG trước khi tiêu
-// phoneToken và trước khi gọi ViGov.
-func TestPhienViGov_503_KhiMaTaiKhoanChuaDo(t *testing.T) {
-	b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, nil)
-	b.s.VoiCauPhienViGov(b.cau, zalo.MaTaiKhoanChuaDo{}, appIDGia)
+// Lỗi hạ tầng ở bước mã tài khoản: DỪNG trước khi tiêu phoneToken (có thể dùng
+// một lần) và trước khi gọi ViGov.
+func TestPhienViGov_502_MaTaiKhoanKhongVoiToi_KhongTieuPhoneToken(t *testing.T) {
+	b := dungServerCau(t, &cauGia{kq: ketQuaCoXa()}, &maZaloGia{loi: zalo.ErrKhongVoiToiZalo})
 
 	w := goiDangNhap(t, b.s, thanCauHopLe)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("mã = %d, mong 503", w.Code)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("mã = %d, mong 502", w.Code)
 	}
 	if len(b.cau.nhan) != 0 {
 		t.Error("chưa có mã tài khoản mà vẫn gọi cầu")
@@ -344,8 +343,8 @@ func TestPhienViGov_503_KhiMaTaiKhoanChuaDo(t *testing.T) {
 	if b.z.goi != 0 {
 		t.Error("đã tiêu phoneToken trong khi đường cầu chắc chắn hỏng")
 	}
-	if b.kho.dem(phien.KetQuaLoiHeThong) != 1 {
-		t.Error("phải ghi nhật ký loi_he_thong")
+	if b.kho.dem(phien.KetQuaLoiZalo) != 1 {
+		t.Error("phải ghi nhật ký loi_zalo")
 	}
 }
 

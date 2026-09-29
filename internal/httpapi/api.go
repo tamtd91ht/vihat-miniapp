@@ -71,6 +71,12 @@ type Server struct {
 	// tuyến vẫn gắn và trả 503.
 	doiViTri     DoiViTriZalo
 	gioiHanViTri *GioiHanIP
+
+	// App chung và app riêng của xã — xem app_zalo.go. `zalo` và `doiViTri` ở
+	// trên là của app CHUNG; appXa giữ mỗi app riêng một bộ đổi mang secret
+	// của chính nó. Rỗng là không có app riêng nào: hành vi y như trước.
+	appIDChung string
+	appXa      map[string]ZaloCuaApp
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -85,6 +91,8 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 		log:     log,
 		ttl:     config.TTLPhien,
 		now:     time.Now,
+
+		appIDChung: cfg.ZaloAppID,
 	}
 }
 
@@ -106,19 +114,20 @@ type CauPhienViGov interface {
 	MoPhien(ctx context.Context, yc vigovcau.YeuCau) (vigovcau.KetQua, error)
 }
 
-// MaTaiKhoanZalo xác minh accessToken bằng secret của app và trả mã tài khoản
-// Zalo. Hôm nay chỉ có zalo.MaTaiKhoanChuaDo — luôn từ chối (ADR 0045 UNKNOWN #2).
+// MaTaiKhoanZalo xác minh accessToken với Zalo và trả mã tài khoản Zalo (theo
+// app). Cài đặt: (*zalo.Client).LayMaTaiKhoan — KHÔNG dùng secret, nên KHÔNG
+// nói được token thuộc app nào (xem app_zalo.go).
 type MaTaiKhoanZalo interface {
 	LayMaTaiKhoan(ctx context.Context, accessToken string) (string, error)
 }
 
-// VoiCauPhienViGov bật cầu phiên: từ đây POST /api/v1/sessions có mang
-// communeHostHint phát PHIÊN CÔNG DÂN CỦA ViGov; lượt không mang nó vẫn là
-// phiên của kho này — xem sessions.go (chọn nhánh) và sessions_vigov.go.
+// VoiCauPhienViGov bật cầu phiên: từ đây POST /api/v1/sessions đi cầu khi
+// (a) yêu cầu đến từ một app RIÊNG của xã (VoiAppXa), hoặc (b) app chung có
+// mang communeHostHint; lượt còn lại vẫn là phiên của kho này — xem
+// sessions.go (chọn nhánh) và sessions_vigov.go.
 //
-// appID là App ID mà secret của nó xác minh token — hôm nay chỉ có MỘT cặp
-// (ZALO_MINIAPP_APP_ID / ZALO_MINIAPP_SECRET_KEY). N app riêng cần N cặp và
-// cách chọn cặp theo yêu cầu (ADR 0045 UNKNOWN #1) — chưa làm.
+// appID là App ID của app CHUNG (ZALO_MINIAPP_APP_ID), gửi trên nhánh (b).
+// Nhánh (a) gửi App ID của chính app riêng.
 //
 // Tách khỏi `Moi` vì cùng lý do `VoiYeuCau`: test của phiên cũ gọi `Moi` trần.
 func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appID string) *Server {

@@ -42,6 +42,9 @@ func (s *Server) VoiViTri(z DoiViTriZalo) *Server {
 type yeuCauViTri struct {
 	AccessToken   string `json:"accessToken"`   // getAccessToken()
 	LocationToken string `json:"locationToken"` // token của getLocation()
+	// AppID — cùng nghĩa với POST /api/v1/sessions (app_zalo.go): chọn secret
+	// của app đang chạy. Vắng = app chung.
+	AppID string `json:"appId"`
 }
 
 type phanHoiViTri struct {
@@ -65,9 +68,11 @@ const (
 	maViTriQuaNhieuLan   = "rate_limited"
 	maViTriSaiPhuongThuc = "method_not_allowed"
 	maViTriChuaLapRap    = "unavailable"
+	maViTriAppLa         = "app_not_configured"
 )
 
 const (
+	loiViTriAppLa      = "Ứng dụng chưa sẵn sàng lấy vị trí. Vui lòng tự nhập địa chỉ."
 	loiViTriYeuCauHong = "Yêu cầu không hợp lệ. Vui lòng thử lại, hoặc tự nhập địa chỉ."
 	loiViTriZalo       = "Chưa lấy được vị trí từ Zalo. Vui lòng thử lại, hoặc tự nhập địa chỉ."
 	loiViTriQuaNhieu   = "Bạn đã thử lấy vị trí quá nhiều lần. Vui lòng chờ vài phút, hoặc tự nhập địa chỉ."
@@ -116,7 +121,22 @@ func (s *Server) viTri(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	viDo, kinhDo, err := s.doiViTri.LayViTri(r.Context(), yc.AccessToken, yc.LocationToken)
+	// Secret của ĐÚNG app. Trước nhánh này, app riêng đổi bằng secret app chung
+	// và nhận 502 (chủ dự án báo 29/09/2026 — chưa rõ Zalo từ chối vì secret
+	// sai app hay vì lý do khác; app_zalo.go điểm 3).
+	doi := s.doiViTri
+	switch loai, zApp := s.chonApp(yc.AppID); loai {
+	case appLa:
+		// Không có secret nào để đổi; lùi về app chung chỉ đổi lấy một lần Zalo
+		// từ chối. 422 chứ không 502: lỗi nằm ở cấu hình của ta, không ở Zalo.
+		s.log.Warn("tuyến vị trí: App ID chưa cấu hình — từ chối (giá trị không log: do client đặt)")
+		s.traLoiCoMa(w, http.StatusUnprocessableEntity, loiViTriAppLa, maViTriAppLa)
+		return
+	case appRieng:
+		doi = zApp
+	}
+
+	viDo, kinhDo, err := doi.LayViTri(r.Context(), yc.AccessToken, yc.LocationToken)
 	if err != nil {
 		// MỘT mã, MỘT trạng thái (502) cho MỌI thất bại của Zalo — KHÁC tuyến đăng
 		// nhập, cố ý:
