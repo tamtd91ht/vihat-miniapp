@@ -56,3 +56,11 @@ data:
 
   # Cổng cầu phiên của service-identity: danh sách host:port, dấu phẩy.
   VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS: "<dien-vao-host-cong-cau-1>:<cong>,<dien-vao-host-cong-cau-2>:<cong>"
+
+  # ---------------------------------------------------------------------
+  # WEBHOOK "YÊU CẦU MỚI" — tuỳ chọn, đi CẶP với REQUEST_WEBHOOK_SECRET ở
+  # Secret. Một nửa, hoặc URL không phải https://, thì service KHÔNG khởi động.
+  # ---------------------------------------------------------------------
+
+  # URL nhận sự kiện request.created. CHỈ https:// — thân mang số điện thoại.
+  REQUEST_WEBHOOK_URL: "<dien-vao-url-https-nhan-su-kien>"

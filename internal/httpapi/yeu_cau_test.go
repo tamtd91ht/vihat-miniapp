@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/vihat/vihat-miniapp/internal/config"
 	"github.com/vihat/vihat-miniapp/internal/phien"
+	"github.com/vihat/vihat-miniapp/internal/secret"
 	"github.com/vihat/vihat-miniapp/internal/store"
+	"github.com/vihat/vihat-miniapp/internal/webhook"
 	"github.com/vihat/vihat-miniapp/internal/yeucau"
 )
 
@@ -442,4 +445,383 @@ func TestGoiLai_SoDienThoaiKhongVaoLogKeCaKhiHong(t *testing.T) {
 	if strings.Contains(log.String(), soGia) {
 		t.Fatalf("số điện thoại đã vào log: %s", log.String())
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Ba loại "bấm rồi thôi" (07/10/2026): chat · sms_promo · sms_optout
+// ---------------------------------------------------------------------------
+
+func TestBamNut_BaLoaiMoiDuocNhanVaGhiDungMa(t *testing.T) {
+	for _, ca := range []struct{ kind, loai string }{
+		{"chat", yeucau.LoaiChat},
+		{"sms_promo", yeucau.LoaiNhanUuDaiSMS},
+		{"sms_optout", yeucau.LoaiHuyUuDaiSMS},
+	} {
+		t.Run(ca.kind, func(t *testing.T) {
+			kho := moiKhoYeuCau()
+			kho.phienHopLe["tok-a"] = nguoiA
+			// Tổng đài nil: ba loại này KHÔNG được phụ thuộc tổng đài.
+			s, _ := dungServerYeuCau(t, kho, nil)
+
+			w := goiYeuCau(t, s, http.MethodPost, "tok-a", `{"kind":"`+ca.kind+`"}`)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("mã %d, mong 201 — thân %s", w.Code, w.Body.String())
+			}
+			var ph phanHoiYeuCau
+			if err := json.Unmarshal(w.Body.Bytes(), &ph); err != nil {
+				t.Fatalf("thân không đọc được: %s", err)
+			}
+			if ph.Kind != ca.kind || ph.Status != "moi" || ph.RequestID == "" || ph.CreatedAt == "" {
+				t.Fatalf("thân 201 sai hình dạng: %+v", ph)
+			}
+			if len(kho.daTao) != 1 || kho.daTao[0].Loai != ca.loai {
+				t.Fatalf("ghi %+v, mong đúng một phiếu loại %q", kho.daTao, ca.loai)
+			}
+			if kho.daTao[0].NguoiDungID != nguoiA {
+				t.Fatal("phiếu không thuộc người của phiên")
+			}
+		})
+	}
+}
+
+func TestBamNut_DanhSachTraTenDay(t *testing.T) {
+	kho := moiKhoYeuCau()
+	kho.phienHopLe["tok-a"] = nguoiA
+	kho.dsCuaToi[nguoiA] = []yeucau.TomTat{
+		{Ma: "m1", Loai: yeucau.LoaiChat, TrangThai: "moi", TaoLuc: time.Now()},
+		{Ma: "m2", Loai: yeucau.LoaiNhanUuDaiSMS, TrangThai: "moi", TaoLuc: time.Now()},
+		{Ma: "m3", Loai: yeucau.LoaiHuyUuDaiSMS, TrangThai: "moi", TaoLuc: time.Now()},
+		{Ma: "m4", Loai: yeucau.LoaiTuVan, TrangThai: "moi", TaoLuc: time.Now()},
+		{Ma: "m5", Loai: yeucau.LoaiGoiLai, TrangThai: "moi", TaoLuc: time.Now()},
+	}
+	s, _ := dungServerYeuCau(t, kho, &tongDaiGia{})
+
+	w := goiYeuCau(t, s, http.MethodGet, "tok-a", "")
+	var ph phanHoiDanhSach
+	if err := json.Unmarshal(w.Body.Bytes(), &ph); err != nil {
+		t.Fatalf("thân không đọc được: %s", err)
+	}
+	mong := []string{"chat", "sms_promo", "sms_optout", "consult", "callback"}
+	if len(ph.Items) != len(mong) {
+		t.Fatalf("thân = %s", w.Body.String())
+	}
+	for i, k := range mong {
+		if ph.Items[i].Kind != k {
+			t.Errorf("mục %d: kind %q, mong %q — mã cột lọt ra dây", i, ph.Items[i].Kind, k)
+		}
+	}
+}
+
+// Ánh xạ hai chiều phải khép kín: mọi tên dây đi một vòng về đúng nó.
+func TestBamNut_AnhXaHaiChieuKhepKin(t *testing.T) {
+	for _, k := range []string{"consult", "callback", "chat", "sms_promo", "sms_optout"} {
+		loai, ok := loaiTu(k)
+		if !ok || kindTu(loai) != k {
+			t.Errorf("%q -> %q -> %q", k, loai, kindTu(loai))
+		}
+	}
+}
+
+func TestBamNut_TenHienThi(t *testing.T) {
+	for _, ca := range []struct {
+		ten  string
+		than string
+		ma   int
+		mong string // TenHienThi ghi xuống, khi 201
+	}{
+		{"chat có tên", `{"kind":"chat","displayName":"  Nguyễn Văn A  "}`, http.StatusCreated, "Nguyễn Văn A"},
+		{"chat không tên", `{"kind":"chat"}`, http.StatusCreated, ""},
+		{"chat tên rỗng", `{"kind":"chat","displayName":"   "}`, http.StatusCreated, ""},
+		{"chat đúng 100 ký tự", `{"kind":"chat","displayName":"` + strings.Repeat("ữ", 100) + `"}`, http.StatusCreated, strings.Repeat("ữ", 100)},
+		{"chat 101 ký tự", `{"kind":"chat","displayName":"` + strings.Repeat("ữ", 101) + `"}`, http.StatusBadRequest, ""},
+		{"consult có tên", `{"kind":"consult","displayName":"A"}`, http.StatusBadRequest, ""},
+		{"callback có tên", `{"kind":"callback","displayName":"A"}`, http.StatusBadRequest, ""},
+		{"sms_promo có tên", `{"kind":"sms_promo","displayName":"A"}`, http.StatusBadRequest, ""},
+		{"sms_optout có tên", `{"kind":"sms_optout","displayName":"A"}`, http.StatusBadRequest, ""},
+		{"sms_optout tên rỗng", `{"kind":"sms_optout","displayName":""}`, http.StatusCreated, ""},
+	} {
+		t.Run(ca.ten, func(t *testing.T) {
+			kho := moiKhoYeuCau()
+			kho.phienHopLe["tok-a"] = nguoiA
+			s, _ := dungServerYeuCau(t, kho, &tongDaiGia{})
+
+			w := goiYeuCau(t, s, http.MethodPost, "tok-a", ca.than)
+			if w.Code != ca.ma {
+				t.Fatalf("mã %d, mong %d", w.Code, ca.ma)
+			}
+			if ca.ma != http.StatusCreated {
+				if len(kho.daTao) != 0 {
+					t.Fatal("thân bị từ chối mà vẫn ghi phiếu")
+				}
+				var ph phanHoiLoi
+				if err := json.Unmarshal(w.Body.Bytes(), &ph); err != nil || ph.Message != loiTruongKhongHopLe {
+					t.Fatalf("câu trả về %s, mong loiTruongKhongHopLe", w.Body.String())
+				}
+				return
+			}
+			if len(kho.daTao) != 1 || kho.daTao[0].TenHienThi != ca.mong {
+				t.Fatalf("ghi %+v, mong tên %q", kho.daTao, ca.mong)
+			}
+		})
+	}
+}
+
+// Ba loại mới cũng không cho client tự khai mình là ai.
+func TestBamNut_ThanKhongDatDuocNguoiDung(t *testing.T) {
+	kho := moiKhoYeuCau()
+	kho.phienHopLe["tok-a"] = nguoiA
+	s, _ := dungServerYeuCau(t, kho, nil)
+
+	than := `{"kind":"sms_optout","nguoi_dung_id":"` + nguoiB + `","userId":"` + nguoiB +
+		`","phone":"84900000001","nguoiDungId":"` + nguoiB + `"}`
+	w := goiYeuCau(t, s, http.MethodPost, "tok-a", than)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mã %d, mong 201", w.Code)
+	}
+	if len(kho.daTao) != 1 || kho.daTao[0].NguoiDungID != nguoiA {
+		t.Fatalf("phiếu ghi cho %+v, mong %q", kho.daTao, nguoiA)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Webhook "yêu cầu mới" — đi đủ đường thật: handler -> yeucau -> webhook ->
+// máy chủ TLS. Client của httptest mang CA của máy chủ test: kiểm TLS VẪN BẬT.
+// ---------------------------------------------------------------------------
+
+const (
+	khoaWebhookGia = "khoa-ky-webhook-gia-lap-test-032"
+	tenBiMat       = "ten-hien-thi-KHONG-DUOC-VAO-LOG"
+)
+
+type mayNhanWebhook struct {
+	mu      sync.Mutex
+	than    [][]byte
+	chuKy   []string
+	maTraVe int
+}
+
+func moiMayNhan(t *testing.T, maTraVe int) (*httptest.Server, *mayNhanWebhook) {
+	t.Helper()
+	m := &mayNhanWebhook{maTraVe: maTraVe}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		m.mu.Lock()
+		m.than = append(m.than, b)
+		m.chuKy = append(m.chuKy, r.Header.Get(webhook.HeaderChuKy))
+		m.mu.Unlock()
+		w.WriteHeader(m.maTraVe)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, m
+}
+
+func (m *mayNhanWebhook) soLan() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.than)
+}
+
+// dongBoGhi — log được ghi từ goroutine nền của webhook; bytes.Buffer trần sẽ
+// làm -race đỏ.
+type dongBoGhi struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (d *dongBoGhi) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.b.Write(p)
+}
+
+func (d *dongBoGhi) String() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.b.String()
+}
+
+func dungServerBaoYeuCau(t *testing.T, kho *khoYeuCauGia, bao yeucau.BaoWebhook) (*Server, *yeucau.DichVu, *dongBoGhi) {
+	t.Helper()
+	log := &dongBoGhi{}
+	cfg := config.Config{CORSAllowedOrigins: []string{"https://h5.zdn.vn"}}
+	lg := slog.New(slog.NewJSONHandler(log, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	dv := yeucau.Moi(kho, &tongDaiGia{}, nil, lg).VoiWebhook(bao)
+	return Moi(kho, &zaloGia{so: soGia}, cfg, lg).VoiYeuCau(kho, dv), dv, log
+}
+
+func choNen(t *testing.T, dv *yeucau.DichVu) {
+	t.Helper()
+	ctx, huy := context.WithTimeout(context.Background(), 15*time.Second)
+	defer huy()
+	if err := dv.ChoViecNen(ctx); err != nil {
+		t.Fatalf("việc nền chưa xong: %s", err)
+	}
+}
+
+func TestWebhook_DuocGoiVoiChuKyVaThanDung(t *testing.T) {
+	srv, may := moiMayNhan(t, http.StatusNoContent)
+	bao := webhook.Moi(srv.URL, secret.Secret(khoaWebhookGia), webhook.VoiHTTPClient(srv.Client()))
+	if bao == nil {
+		t.Fatal("webhook.Moi trả nil với URL https hợp lệ")
+	}
+	kho := moiKhoYeuCau()
+	kho.phienHopLe["tok-a"] = nguoiA
+	s, dv, _ := dungServerBaoYeuCau(t, kho, bao)
+
+	// Thân nhồi cả một số điện thoại KHÁC: số đi sang webhook phải là số của PHIÊN.
+	w := goiYeuCau(t, s, http.MethodPost, "tok-a",
+		`{"kind":"chat","displayName":"Nguyễn Văn A","phone":"84900000009","source":"qr-gian-hang"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mã %d, mong 201", w.Code)
+	}
+	choNen(t, dv)
+
+	if may.soLan() != 1 {
+		t.Fatalf("webhook nhận %d lần, mong 1", may.soLan())
+	}
+	than, chuKy := may.than[0], may.chuKy[0]
+	if chuKy != webhook.KyThan([]byte(khoaWebhookGia), than) {
+		t.Fatalf("chữ ký %q không khớp HMAC-SHA256 của thân thô", chuKy)
+	}
+	if !strings.HasPrefix(chuKy, "sha256=") || len(chuKy) != len("sha256=")+64 {
+		t.Fatalf("chữ ký sai khuôn sha256=<hex>: %q", chuKy)
+	}
+
+	var sk map[string]any
+	if err := json.Unmarshal(than, &sk); err != nil {
+		t.Fatalf("thân webhook không phải JSON: %s", err)
+	}
+	mong := map[string]any{
+		"event":       "request.created",
+		"requestId":   "3f1c0c9e-0000-4000-8000-0000000000c1",
+		"kind":        "chat",
+		"phone":       soGia,
+		"displayName": "Nguyễn Văn A",
+		"scale":       "",
+		"note":        "",
+		"source":      "qr-gian-hang",
+	}
+	for k, v := range mong {
+		if sk[k] != v {
+			t.Errorf("%s = %v, mong %v", k, sk[k], v)
+		}
+	}
+	if ds, ok := sk["interests"].([]any); !ok || len(ds) != 0 {
+		t.Errorf("interests = %v, mong [] (không phải null)", sk["interests"])
+	}
+	if ts, _ := sk["createdAt"].(string); ts == "" {
+		t.Error("thiếu createdAt")
+	} else if _, err := time.Parse(time.RFC3339, ts); err != nil {
+		t.Errorf("createdAt không phải RFC3339: %q", ts)
+	}
+}
+
+// Mọi loại đều được báo, kể cả consult / callback đã có từ trước.
+func TestWebhook_MoiLoaiDeuDuocBao(t *testing.T) {
+	for _, kind := range []string{"consult", "callback", "chat", "sms_promo", "sms_optout"} {
+		t.Run(kind, func(t *testing.T) {
+			srv, may := moiMayNhan(t, http.StatusOK)
+			bao := webhook.Moi(srv.URL, secret.Secret(khoaWebhookGia), webhook.VoiHTTPClient(srv.Client()))
+			kho := moiKhoYeuCau()
+			kho.phienHopLe["tok-a"] = nguoiA
+			s, dv, _ := dungServerBaoYeuCau(t, kho, bao)
+
+			if w := goiYeuCau(t, s, http.MethodPost, "tok-a", `{"kind":"`+kind+`"}`); w.Code != http.StatusCreated {
+				t.Fatalf("mã %d, mong 201", w.Code)
+			}
+			choNen(t, dv)
+			if may.soLan() != 1 {
+				t.Fatalf("webhook nhận %d lần, mong 1", may.soLan())
+			}
+			if !strings.Contains(string(may.than[0]), `"kind":"`+kind+`"`) {
+				t.Fatalf("thân không mang tên dây %q: %s", kind, may.than[0])
+			}
+			if strings.Contains(string(may.than[0]), "displayName") {
+				t.Fatal("displayName rỗng phải vắng mặt trong thân")
+			}
+		})
+	}
+}
+
+func TestWebhook_ChuaCauHinhThiKhongGoi(t *testing.T) {
+	_, may := moiMayNhan(t, http.StatusOK)
+	kho := moiKhoYeuCau()
+	kho.phienHopLe["tok-a"] = nguoiA
+	// Giao diện nil — đúng như cmd/server lắp khi hai biến trống.
+	s, dv, _ := dungServerBaoYeuCau(t, kho, nil)
+
+	if w := goiYeuCau(t, s, http.MethodPost, "tok-a", `{"kind":"sms_promo"}`); w.Code != http.StatusCreated {
+		t.Fatalf("mã %d, mong 201", w.Code)
+	}
+	choNen(t, dv)
+	if may.soLan() != 0 {
+		t.Fatal("webhook chưa cấu hình mà vẫn có lời gọi đi ra")
+	}
+	if len(kho.daTao) != 1 {
+		t.Fatal("tắt webhook thì phiếu vẫn phải được ghi")
+	}
+}
+
+// Bên nhận hỏng không được chạm tới người dùng: vẫn 201, phiếu vẫn ghi, và
+// log chỉ có mã yêu cầu + mã HTTP — không số, không tên, không ghi chú.
+func TestWebhook_HongKhongAnhHuong201VaKhongRoDuLieu(t *testing.T) {
+	srv, may := moiMayNhan(t, http.StatusInternalServerError)
+	bao := webhook.Moi(srv.URL, secret.Secret(khoaWebhookGia),
+		webhook.VoiHTTPClient(srv.Client()), webhook.VoiNghiGiuaHaiLuot(0))
+	kho := moiKhoYeuCau()
+	kho.phienHopLe["tok-a"] = nguoiA
+	s, dv, log := dungServerBaoYeuCau(t, kho, bao)
+
+	than, _ := json.Marshal(map[string]string{"kind": "chat", "displayName": tenBiMat, "note": ghiChuBiMat})
+	w := goiYeuCau(t, s, http.MethodPost, "tok-a", string(than))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mã %d, mong 201 — webhook hỏng đã chạm tới người dùng", w.Code)
+	}
+	choNen(t, dv)
+
+	if may.soLan() != 2 {
+		t.Fatalf("bên nhận trả 500: nhận %d lượt, mong đúng 2 (một lần thử lại)", may.soLan())
+	}
+	if len(kho.daTao) != 1 {
+		t.Fatal("phiếu phải được ghi dù webhook hỏng")
+	}
+	nk := log.String()
+	for _, cam := range []string{soGia, tenBiMat, ghiChuBiMat, khoaWebhookGia} {
+		if strings.Contains(nk, cam) {
+			t.Fatalf("log chứa %q:\n%s", cam, nk)
+		}
+	}
+	if !strings.Contains(nk, "3f1c0c9e-0000-4000-8000-0000000000c1") || !strings.Contains(nk, "HTTP 500") {
+		t.Fatalf("log phải nêu mã yêu cầu và mã HTTP:\n%s", nk)
+	}
+}
+
+// Bên nhận treo: phản hồi 201 KHÔNG được chờ webhook.
+func TestWebhook_KhongLamChamPhanHoi(t *testing.T) {
+	nha := make(chan struct{})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-nha:
+		case <-r.Context().Done():
+		}
+	}))
+	// srv.Close cắt kết nối, nên bộ xử lý thoát qua r.Context() kể cả khi ca
+	// hỏng trước lúc `nha` được đóng.
+	t.Cleanup(srv.Close)
+
+	bao := webhook.Moi(srv.URL, secret.Secret(khoaWebhookGia), webhook.VoiHTTPClient(srv.Client()))
+	kho := moiKhoYeuCau()
+	kho.phienHopLe["tok-a"] = nguoiA
+	s, dv, _ := dungServerBaoYeuCau(t, kho, bao)
+
+	batDau := time.Now()
+	w := goiYeuCau(t, s, http.MethodPost, "tok-a", `{"kind":"chat"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mã %d, mong 201", w.Code)
+	}
+	if d := time.Since(batDau); d > time.Second {
+		t.Fatalf("phản hồi mất %s — tuyến HTTP đang chờ webhook", d)
+	}
+	close(nha)
+	choNen(t, dv)
 }

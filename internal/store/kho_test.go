@@ -24,7 +24,7 @@ import (
 //
 //	TEST_DATABASE_DSN='<dsn>' go test ./internal/store
 //
-// CSDL đó phải đã chạy CẢ HAI migration trong migrations/, và phải là CSDL DÙNG
+// CSDL đó phải đã chạy MỌI migration trong migrations/ (`make migrate`), và phải là CSDL DÙNG
 // RIÊNG cho test: các ca dưới đây có ghi dữ liệu, và ca dọn nhật ký có DROP
 // phân mảnh.
 func moKhoTest(t *testing.T) *Kho {

@@ -1,7 +1,8 @@
 # vihat-miniapp — Deployment MẪU.
 #
-# Mười một biến, mười một dòng `env:` tường minh (năm biến gốc + bốn biến tuỳ chọn
-# của bề mặt "yêu cầu" + hai biến tuỳ chọn của cầu phiên ViGov, xem khối trong `env:`). CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
+# Mười bốn biến, mười bốn dòng `env:` tường minh (năm biến gốc + bốn biến tuỳ chọn
+# của bề mặt "yêu cầu" + hai biến tuỳ chọn của cầu phiên ViGov + app riêng của xã
+# + hai biến tuỳ chọn của webhook "yêu cầu mới", xem khối trong `env:`). CỐ Ý KHÔNG DÙNG `envFrom` — lý do và cái
 # bẫy đằng sau nằm trong deploy/README.md mục "Vì sao env: tường minh". Đọc mục
 # ấy trước khi rút gọn tệp này.
 apiVersion: apps/v1
@@ -156,6 +157,20 @@ spec:
                 secretKeyRef:
                   name: vihat-miniapp-bi-mat
                   key: ZALO_MINIAPP_COMMUNE_APP_SECRETS
+                  optional: true
+            # Webhook "yeu cau moi" — tuy chon, DI CAP: config.Nap tu choi
+            # khoi dong khi chi co mot trong hai, hoac URL khong phai https.
+            - name: REQUEST_WEBHOOK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: REQUEST_WEBHOOK_URL
+                  optional: true
+            - name: REQUEST_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: REQUEST_WEBHOOK_SECRET
                   optional: true
 
           # ===================================================================

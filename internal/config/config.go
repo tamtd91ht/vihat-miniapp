@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -94,7 +95,30 @@ type Config struct {
 	// secret của app ấy, và đăng nhập đi cầu ViGov (httpapi, sessions.go). Rỗng
 	// là không có app riêng nào — hành vi y như trước.
 	AppXa []AppZalo
+
+	// ---------------------------------------------------------------------
+	// WEBHOOK "YÊU CẦU MỚI" — HAI BIẾN, CẢ HAI HOẶC KHÔNG BIẾN NÀO (07/10/2026).
+	//
+	// Bật thì MỌI yêu cầu vừa ghi (tư vấn, gọi lại, chat, nhận / huỷ ưu đãi
+	// SMS) được POST sang URL này, ký HMAC-SHA256 — xem internal/webhook. Tắt
+	// thì chỉ ghi CSDL, mọi tuyến chạy y như cũ.
+	//
+	// Cùng luật với cầu phiên: NỬA CẤU HÌNH LÀ TỪ CHỐI KHỞI ĐỘNG, không phải
+	// lặng lẽ tắt. Có URL mà thiếu khoá thì hoặc là gửi không ký (bên nhận
+	// không phân biệt được ta với kẻ giả mạo), hoặc là lặng lẽ không gửi —
+	// trong khi người vận hành tin rằng nút "huỷ nhận SMS" đang có tác dụng.
+	// ---------------------------------------------------------------------
+
+	// WebhookURL: CHỈ https (config từ chối mọi thứ khác). Thân sự kiện mang số
+	// điện thoại; đi qua http thì ai trên đường cũng đọc được.
+	WebhookURL string
+	// WebhookKhoa: khoá ký HMAC, >= WebhookKhoaToiThieu byte.
+	WebhookKhoa secret.Secret
 }
+
+// WebhookBat — webhook có được cấu hình hay không. Nap đã bảo đảm hai biến đi
+// cùng nhau.
+func (c Config) WebhookBat() bool { return c.WebhookURL != "" }
 
 // AppZalo — một Mini App và secret của nó. AppID không phải bí mật (được phép
 // in ra log vận hành); SecretKey thì có.
@@ -143,6 +167,18 @@ const (
 	// ngắn hơn, nên một khoá ngắn ở đây chắc chắn là khoá sai. Bắt ngay lúc
 	// khởi động thay vì để mọi lượt đăng nhập nhận UNAUTHENTICATED.
 	VigovCauKhoaToiThieu = 32
+
+	// Hai biến của webhook "yêu cầu mới". Tiền tố theo VAI TRÒ (`REQUEST_`
+	// WEBHOOK — đích nhận sự kiện yêu cầu), không theo bên cung cấp như
+	// `ZALO_ZNS_` / `TONGDAI_`: bên nhận chưa được chốt, và tên biến không được
+	// đổi khi bên nhận đổi.
+	EnvWebhookURL  = "REQUEST_WEBHOOK_URL"
+	EnvWebhookKhoa = "REQUEST_WEBHOOK_SECRET"
+
+	// WebhookKhoaToiThieu — độ dài tối thiểu (byte) của khoá ký. 32 byte = độ
+	// dài khối đầu ra của SHA-256: khoá HMAC ngắn hơn thế là khoá yếu hơn chính
+	// hàm băm. Cùng con số với khoá cầu ViGov để người vận hành chỉ phải nhớ một.
+	WebhookKhoaToiThieu = 32
 
 	listenAddrMacDinh = ":8080"
 )
@@ -242,6 +278,27 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 		cfg.AppXa = apps
 	}
 
+	// Webhook "yêu cầu mới": tuỳ chọn, NỬA NHÓM THÌ TỪ CHỐI — xem Config.
+	urlWebhook, khoaWebhook := tuyChon(EnvWebhookURL), tuyChon(EnvWebhookKhoa)
+	switch {
+	case urlWebhook == "" && khoaWebhook == "":
+		// Tắt. Yêu cầu chỉ được ghi vào CSDL.
+	case urlWebhook == "" || khoaWebhook == "":
+		loi = append(loi, "webhook yêu cầu nửa cấu hình: "+EnvWebhookURL+" và "+
+			EnvWebhookKhoa+" phải cùng có hoặc cùng trống")
+	default:
+		// KHÔNG nêu URL trong lỗi: nó có thể mang một token ở chuỗi truy vấn.
+		if !laURLHTTPS(urlWebhook) {
+			loi = append(loi, EnvWebhookURL+": phải là URL https:// tuyệt đối, có host, không kèm user:pass "+
+				"— thân sự kiện mang số điện thoại")
+		}
+		if len(khoaWebhook) < WebhookKhoaToiThieu {
+			loi = append(loi, fmt.Sprintf("%s: khoá ký phải dài ít nhất %d byte", EnvWebhookKhoa, WebhookKhoaToiThieu))
+		}
+		cfg.WebhookURL = urlWebhook
+		cfg.WebhookKhoa = secret.Secret(khoaWebhook)
+	}
+
 	if len(thieu) > 0 {
 		loi = append(loi, "thiếu biến bắt buộc: "+strings.Join(thieu, ", "))
 	}
@@ -249,6 +306,13 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("%s: %w", strings.Join(loi, "; "), ErrThieuBien)
 	}
 	return cfg, nil
+}
+
+// laURLHTTPS — URL tuyệt đối, scheme https, có host, không kèm user:pass.
+// internal/webhook kiểm lại đúng các điều kiện ấy (lớp chắn thứ hai).
+func laURLHTTPS(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != "" && u.User == nil
 }
 
 // NapTuMoiTruong là lối vào dùng trong sản xuất.

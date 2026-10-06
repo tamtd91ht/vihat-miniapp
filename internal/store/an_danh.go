@@ -37,7 +37,10 @@ type YeuCauAnDanh struct {
 type KetQuaAnDanh struct {
 	NguoiDungID   string
 	SoPhienThuHoi int
-	ThoiDiem      time.Time
+	// SoYeuCauAnDanh — số phiếu yeu_cau của người ấy vừa bị xoá ghi chú và tên
+	// hiển thị (migrations/0003, 0004).
+	SoYeuCauAnDanh int
+	ThoiDiem       time.Time
 }
 
 // ErrKhongTimThayNguoiDung: không có ai ứng với số ấy — có thể vì chưa từng
@@ -69,13 +72,34 @@ const sqlThuHoiPhien = `
 	   AND thu_hoi_luc IS NULL
 	   AND het_han_luc > now()`
 
+// Phiếu yêu cầu của người ấy: xoá hai cột người dùng TỰ GÕ — ô ghi chú tự do và
+// tên hiển thị Zalo (0004) — rồi đánh dấu đã ẩn danh. Giữ hàng: loại, sản phẩm
+// quan tâm, chiến dịch, thời điểm vẫn là thống kê dùng được và không chỉ về ai.
+//
+// Cùng câu với hàm dọn 24 tháng (an_danh_yeu_cau_qua_han), và CHECK
+// yeu_cau_an_danh_thi_sach từ chối nếu một trong hai cột còn chữ — nên quên một
+// cột ở đây là lệnh ẩn danh HỎNG, không phải chạy xanh mà để lại tên người.
+const sqlAnDanhYeuCau = `
+	UPDATE yeu_cau
+	   SET ghi_chu      = NULL,
+	       ten_hien_thi = NULL,
+	       an_danh_luc  = now(),
+	       cap_nhat_luc = now()
+	 WHERE nguoi_dung_id = $1
+	   AND an_danh_luc IS NULL`
+
 const sqlGhiNhatKyAnDanh = `
 	INSERT INTO nhat_ky_an_danh (nguoi_dung_id, nguon_yeu_cau, nguoi_thuc_hien, ghi_chu)
 	VALUES ($1, $2, $3, $4)
 	RETURNING tao_luc`
 
-// AnDanhHoa chạy cả ba việc trong MỘT giao dịch: ghi đè định danh, thu hồi
-// phiên, ghi bằng chứng đã xử lý yêu cầu.
+// AnDanhHoa chạy cả bốn việc trong MỘT giao dịch: ghi đè định danh, thu hồi
+// phiên, xoá chữ người dùng tự gõ trên các phiếu yêu cầu (ghi chú, tên hiển
+// thị — 07/10/2026), ghi bằng chứng đã xử lý yêu cầu.
+//
+// ⚠ Cần lược đồ tới 0004 (`make migrate`): câu ẩn danh yeu_cau chạm cột
+// ten_hien_thi. Thiếu 0004 thì lệnh hỏng và cuộn lại trọn vẹn — không có nửa
+// ẩn danh.
 //
 // Một giao dịch vì hai nửa của việc này không được phép rời nhau: ẩn danh mà
 // không thu hồi phiên là chưa xoá; thu hồi phiên mà không ghi ai đã ra lệnh là
@@ -104,6 +128,11 @@ func (k *Kho) AnDanhHoa(ctx context.Context, yc YeuCauAnDanh) (KetQuaAnDanh, err
 		return kq, fmt.Errorf("thu hồi phiên: %w", err)
 	}
 
+	theYC, err := tx.Exec(ctx, sqlAnDanhYeuCau, id)
+	if err != nil {
+		return kq, fmt.Errorf("ẩn danh yeu_cau: %w", err)
+	}
+
 	if err := tx.QueryRow(ctx, sqlGhiNhatKyAnDanh,
 		id, yc.NguonYeuCau, yc.NguoiThucHien, rongThanhNil(yc.GhiChu)).Scan(&kq.ThoiDiem); err != nil {
 		return kq, fmt.Errorf("ghi nhat_ky_an_danh: %w", err)
@@ -115,6 +144,7 @@ func (k *Kho) AnDanhHoa(ctx context.Context, yc YeuCauAnDanh) (KetQuaAnDanh, err
 
 	kq.NguoiDungID = id
 	kq.SoPhienThuHoi = int(the.RowsAffected())
+	kq.SoYeuCauAnDanh = int(theYC.RowsAffected())
 	return kq, nil
 }
 

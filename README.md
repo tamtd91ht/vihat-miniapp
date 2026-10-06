@@ -48,6 +48,8 @@ Xem mục **NỢ** cuối tệp trước khi phát hành.
 | **Cấu hình máy local**: `.env.local`, biến shell đè tệp | `scripts/voi-env.sh` |
 | **Yêu cầu tư vấn / gọi lại**: tuyến cần xác thực, hai trần, vết ZNS | `internal/yeucau`, `internal/httpapi/yeu_cau.go` |
 | **Lược đồ yêu cầu + lịch sử chỉ-ghi-thêm + hạn lưu 24 tháng** | `migrations/0003_yeu_cau.sql` |
+| **Ba loại chat / nhận / huỷ ưu đãi SMS + tên hiển thị Zalo** (07/10/2026) | `migrations/0004_yeu_cau_chat_sms.sql`, `internal/yeucau` |
+| **Webhook "yêu cầu mới"**, ký HMAC-SHA256, chạy nền | `internal/webhook` |
 | Bộ điều hợp ZNS và tổng đài — **hình dạng dây CHƯA ĐO**, xem NỢ | `internal/zns`, `internal/tongdai` |
 
 ---
@@ -71,10 +73,11 @@ GET  /healthz                  công khai, cho thăm dò sức khoẻ
   200: {"trang_thai": "ok"}        503 khi không chạm được CSDL
 
 POST /api/v1/requests          CẦN XÁC THỰC — Authorization: Bearer <token của /sessions>
-  gửi: {"kind": "consult" | "callback",
+  gửi: {"kind": "consult" | "callback" | "chat" | "sms_promo" | "sms_optout",
         "interests": ["omicall", ...],   tối đa 8 mã, khuôn ^[a-z0-9][a-z0-9_-]{0,63}$
         "scale": "<mã>", "source": "<mã chiến dịch>",
-        "note": "<tối đa 2000 KÝ TỰ>"}
+        "note": "<tối đa 2000 KÝ TỰ>",
+        "displayName": "<tên hiển thị Zalo>"}   CHỈ với kind=chat, tối đa 100 KÝ TỰ, tuỳ chọn
   201: {"requestId": "<uuid>", "kind": "...", "status": "moi", "createdAt": "<RFC3339>"}
 
 GET  /api/v1/requests          CẦN XÁC THỰC — CHỈ yêu cầu của chính người đăng nhập
@@ -89,14 +92,59 @@ GET  /api/v1/requests          CẦN XÁC THỰC — CHỈ yêu cầu của chí
 Câu tiếng Việt hiện cho người dùng sống ở Mini App: đổi một nhãn trên màn hình không được phép
 là một lần phát hành lại máy chủ.
 
+| `kind` | Mã cột `yeu_cau.loai` | Hệ quả ở máy chủ này |
+|---|---|---|
+| `consult` | `tu_van` | ghi phiếu · ZNS xác nhận (nếu cấu hình) · webhook (nếu cấu hình) |
+| `callback` | `goi_lai` | trần 3 lượt/24 giờ/người · ghi phiếu · tổng đài quay ra · webhook |
+| `chat` | `chat` | ghi phiếu (kèm `displayName` nếu có) · webhook. Bấm "Chat với chuyên viên" |
+| `sms_promo` | `nhan_uu_dai_sms` | ghi phiếu · webhook. Đăng ký nhận SMS ưu đãi |
+| `sms_optout` | `huy_uu_dai_sms` | ghi phiếu · webhook. Huỷ nhận SMS ưu đãi |
+
+Ba loại cuối (chủ sản phẩm chốt 07/10/2026) là "bấm rồi thôi": **không ZNS** (tin xác nhận cho
+lần bấm huỷ SMS là đúng thứ người dùng vừa từ chối), **không trần riêng** (trần IP đủ), và
+máy chủ này **không** suy ra "đang đăng ký hay đã huỷ" — việc gửi SMS và giữ danh sách là của
+bên nhận webhook; ở đây chỉ có bằng chứng từng lần bấm. Ánh xạ `kind` ↔ mã cột: một bảng duy
+nhất, `internal/yeucau` (`LoaiTuKind` / `KindTuLoai`).
+
 | Mã | Khi nào (tuyến `/requests`) | Câu trả về |
 |---|---|---|
-| 400 | thân không đọc được · `kind` lạ · mã sai khuôn · ghi chú quá 2000 ký tự | Yêu cầu / thông tin không hợp lệ… |
+| 400 | thân không đọc được · `kind` lạ · mã sai khuôn · ghi chú quá 2000 ký tự · `displayName` khác rỗng với `kind` ≠ `chat` · `displayName` quá 100 ký tự | Yêu cầu / thông tin không hợp lệ… |
 | 401 | không có bearer, hoặc phiên đã hết hạn / bị thu hồi | Bạn cần đăng nhập để dùng chức năng này… |
 | 429 | vượt trần theo IP (20/5 phút) **hoặc** trần gọi lại (3 lượt/24 giờ/người) | hai câu khác nhau, xem `yeu_cau.go` |
 | 503 | `kind=callback` mà chưa cấu hình tổng đài, hoặc chưa gọi `VoiYeuCau` | Chức năng … đang tạm ngưng. Vui lòng gọi hotline… |
 
 Lỗi trả về `{"message": "<câu tiếng Việt nói người dùng làm gì tiếp>"}`.
+
+### Webhook "yêu cầu mới" — khi `REQUEST_WEBHOOK_*` được đặt
+
+Sau khi một yêu cầu **đã commit** (mọi `kind`), máy chủ POST một sự kiện sang
+`REQUEST_WEBHOOK_URL`. Không cấu hình thì không gửi gì — chỉ ghi CSDL. Mã: `internal/webhook`
+(dây), `internal/yeucau` (`baoYeuCauMoi`, khi nào và với dữ liệu gì).
+
+```
+POST <REQUEST_WEBHOOK_URL>
+  Content-Type: application/json
+  X-Vihat-Signature: sha256=<hex HMAC-SHA256(REQUEST_WEBHOOK_SECRET, thân THÔ)>
+  {"event": "request.created", "requestId": "<uuid>", "kind": "<tên dây như trên>",
+   "createdAt": "<RFC3339>", "phone": "84xxxxxxxxx",
+   "displayName": "...",            VẮNG khi rỗng
+   "interests": [], "scale": "", "note": "", "source": ""}
+  2xx = đã nhận. Mọi mã khác = hỏng.
+```
+
+| Điều | Giá trị | Vì sao |
+|---|---|---|
+| Chạy | **nền**, sau commit | phản hồi 201 cho app **không bao giờ** chờ webhook; webhook hỏng không làm hỏng yêu cầu |
+| `phone` | tra từ **phiên** (`nguoi_dung.so_dien_thoai`), không bao giờ từ thân | cùng luật với tổng đài / ZNS — thân yêu cầu không đặt được số |
+| Vận chuyển | **chỉ https**, TLS kiểm mặc định, **không theo chuyển hướng** | thân mang số điện thoại, tên, ghi chú |
+| Thời hạn | 5 giây/lượt, **tối đa 2 lượt** (thử lại một lần khi lỗi mạng, 5xx, 429; nghỉ 1 giây); không thử lại 4xx khác | không có hàng đợi bền — hai lượt hỏng thì sự kiện **mất**, phiếu vẫn còn trong `yeu_cau` |
+| Giao | **ít nhất một lần** | lượt thử lại sau một phản hồi bị mất = sự kiện tới hai lần → bên nhận **khử trùng theo `requestId`** |
+| Log | chỉ `ma_yeu_cau` + kết cục (mã HTTP) | **không bao giờ** thân, số, tên, ghi chú |
+| Tắt êm | `cmd/server` chờ các lần báo đang chạy trong phần còn lại của 15 giây | sự kiện của các yêu cầu cuối không mất khi rollout |
+
+Bên nhận kiểm chữ ký trên **đúng byte nhận được** (không parse rồi serialize lại), so bằng hàm
+so sánh thời gian hằng định. Chữ ký **không** kèm dấu thời gian, nên nó không chống phát lại
+— xem NỢ #17.
 
 | Mã | Khi nào | Câu trả về |
 |---|---|---|
@@ -242,6 +290,8 @@ một lần, không bắt người vận hành khởi động lại năm lượt
 | `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | không, **đi cặp** | cổng cầu phiên của identity, danh sách `host:port`; một nửa cặp thì **không khởi động** |
 | `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | không, **đi cặp**, **bí mật** | ≥ 32 byte; **không bao giờ** là `GRPC_CALLER_KEY` của ViGov |
 | `ZALO_MINIAPP_COMMUNE_APP_SECRETS` | không, **bí mật** | app **riêng** của xã: `<app_id>=<secret>,<app_id>=<secret>`. Có giá trị mà cầu tắt thì **không khởi động**; App ID phải là chữ số, không trùng app chung, không lặp |
+| `REQUEST_WEBHOOK_URL` | không, **đi cặp** | đích nhận sự kiện `request.created`; **chỉ `https://`** tuyệt đối có host, không `user:pass` — sai là **không khởi động**; một nửa cặp là **không khởi động** |
+| `REQUEST_WEBHOOK_SECRET` | không, **đi cặp**, **bí mật** | khoá ký HMAC-SHA256, ≥ 32 byte (`openssl rand -hex 32`); bên nhận giữ cùng khoá |
 | `TEST_DATABASE_DSN` | không | chỉ cho test chạm CSDL |
 
 Bí mật **không vào mã nguồn, không vào tài liệu, không vào `.env.example`** — mẫu chỉ có
@@ -423,9 +473,11 @@ Chạy tay, **có người ký**: lệnh hỏi số điện thoại (qua stdin, 
 lệnh — tham số nằm trong `ps` và trong lịch sử shell), nguồn yêu cầu (`hotline`/`email`),
 tên người tiếp nhận, số phiếu, rồi bắt gõ `AN DANH` để xác nhận.
 
-Một giao dịch, ba việc: ghi đè `so_dien_thoai` bằng một giá trị vô danh duy nhất · thu hồi
-mọi phiên **còn hiệu lực** của người ấy · ghi một dòng `nhat_ky_an_danh` mang tên người
-tiếp nhận. Đầu ra chỉ có **mã định danh**, số phiên đã thu hồi và thời điểm — **không bao
+Một giao dịch, bốn việc: ghi đè `so_dien_thoai` bằng một giá trị vô danh duy nhất · thu hồi
+mọi phiên **còn hiệu lực** của người ấy · xoá `ghi_chu` và `ten_hien_thi` trên **mọi phiếu
+`yeu_cau`** của người ấy (giữ hàng, đặt `an_danh_luc`) · ghi một dòng `nhat_ky_an_danh` mang
+tên người tiếp nhận. **Cần lược đồ tới 0004.** Dữ liệu **đã gửi sang bên nhận webhook** thì
+lệnh này không với tới — bên ấy phải xoá theo quy trình của họ. Đầu ra chỉ có **mã định danh**, số phiên đã thu hồi và thời điểm — **không bao
 giờ có số điện thoại**, kể cả khi báo lỗi.
 
 **Cố ý không có tuyến API cho việc này.** Một tuyến nhận số điện thoại rồi xoá dữ liệu ứng
@@ -525,8 +577,11 @@ hồ sơ duyệt Zalo, và khai thiếu một mục cũng là vi phạm chính N
 | Kết quả từng lượt đăng nhập, thành công lẫn thất bại | `nhat_ky_dang_nhap.ket_qua`, `.ly_do` | **chưa — phải bổ sung** |
 | Bản băm của token phiên (không phải token) | `phien.token_bam` | không cần khai riêng — dữ liệu kỹ thuật, không nhận dạng được ai |
 | Việc đã xử lý một yêu cầu xoá: ai tiếp nhận, nguồn, thời điểm | `nhat_ky_an_danh` | **chưa — nên khai**, kèm câu "chúng tôi lưu bằng chứng đã xử lý yêu cầu của bạn" |
+| **Tên hiển thị Zalo** khi bấm "Chat với chuyên viên" (0004) | `yeu_cau.ten_hien_thi` | **chưa — phải bổ sung** |
+| **Lần đăng ký / huỷ nhận SMS ưu đãi** (0004) | `yeu_cau.loai` | **chưa — phải bổ sung** |
+| Số điện thoại, tên hiển thị, ghi chú **gửi sang hệ thống bên nhận webhook** | không lưu ở đây — **chuyển cho bên thứ ba** | **chưa — phải bổ sung**, kèm tên bên nhận |
 
-Không lưu: tên, email, vị trí, thông tin thiết bị, danh bạ, ảnh. Không có bộ theo dõi
+Không lưu: email, vị trí, thông tin thiết bị, danh bạ, ảnh. Không có bộ theo dõi
 (analytics/SDK bên thứ ba) nào trong dịch vụ này.
 
 ### Thời hạn lưu — chủ sản phẩm đã chốt 20/09/2026
@@ -568,7 +623,7 @@ bằng `httptest`; test của `internal/store` **tự SKIP kèm lý do** khi kh�
     kho_test.go:55: thiếu TEST_DATABASE_DSN — test chạm CSDL không chạy
 ```
 
-Chạy phần chạm CSDL (CSDL **dùng riêng cho test**, đã chạy **cả hai** migration — các ca này
+Chạy phần chạm CSDL (CSDL **dùng riêng cho test**, đã chạy **mọi** migration (`make migrate`) — các ca này
 có `DROP` phân mảnh):
 
 ```
@@ -705,3 +760,13 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
     `cmd/thu-zalo` chưa có nhánh vị trí. Đóng bằng một lần gọi thật với token lấy từ điện thoại.
     Từ 29/09/2026 tuyến đổi bằng secret của app mà `appId` chỉ tới — lỗi 502 ở app riêng
     (đổi bằng secret app chung) phải hết; **chưa thử trên máy thật**.
+17. **Webhook "yêu cầu mới" (07/10/2026) — bên nhận CHƯA CHỐT, ba điều còn mở.**
+    (a) **Chống phát lại**: chữ ký không kèm dấu thời gian, nên một thân bị bắt được gửi lại được
+    nguyên văn; bên nhận khử trùng theo `requestId` thì phát lại vô hại — phải xác nhận bên nhận
+    làm vậy. (b) **Không hàng đợi bền**: hai lượt hỏng thì sự kiện mất (log Error kèm
+    `ma_yeu_cau`); dựng lại từ `yeu_cau`. Nếu "huỷ nhận SMS" mà mất sự kiện là không chấp nhận
+    được thì phải có outbox. (c) **Chính sách riêng tư** phải khai việc chuyển số, tên, ghi chú
+    sang bên nhận (bảng "Máy chủ thực sự lưu những gì").
+18. **Migration 0004 chưa chạy trên Postgres thật** (cùng nợ với 0001–0003, mục 8): hai ca
+    `internal/store` mới (`TestAnDanhHoa_XoaGhiChuVaTenTrenYeuCau`, `TestYeuCau_RangBuocTenHienThi`)
+    SKIP khi thiếu `TEST_DATABASE_DSN`.

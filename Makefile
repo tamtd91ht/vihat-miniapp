@@ -49,8 +49,8 @@ test:
 	@$(GO) test -race -count=1 ./...
 
 ## test-csdl — chạy RIÊNG các ca chạm CSDL (NỢ #8). Cần TEST_DATABASE_DSN trỏ
-## tới một CSDL DÙNG RIÊNG CHO TEST đã chạy cả hai migration: các ca này DROP
-## phân mảnh.
+## tới một CSDL DÙNG RIÊNG CHO TEST đã chạy MỌI migration (`make migrate`): các
+## ca này DROP phân mảnh, và ẩn danh hoá chạm cả bảng yeu_cau (0003/0004).
 test-csdl:
 	@$(VOI_ENV) sh -c 'test -n "$$TEST_DATABASE_DSN" || { echo "missing TEST_DATABASE_DSN"; exit 1; }; \
 		$(GO) test -race -count=1 ./internal/store'
@@ -76,7 +76,9 @@ proto:
 migrate:
 	@$(VOI_ENV) sh -c 'test -n "$$DATABASE_DSN" || { echo "missing DATABASE_DSN"; exit 1; }; \
 		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0001_init.sql && \
-		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0002_nhat_ky_90_ngay_va_an_danh.sql'
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0002_nhat_ky_90_ngay_va_an_danh.sql && \
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0003_yeu_cau.sql && \
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0004_yeu_cau_chat_sms.sql'
 
 ## don-nhat-ky — CHẠY HẰNG NGÀY trong cron. KHÔNG phải "hằng tuần cũng được":
 ## khoảng cách giữa hai lần chạy cộng thẳng vào tuổi của dòng cũ nhất, nên chạy

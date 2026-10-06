@@ -54,8 +54,8 @@ func (k *Kho) TraPhienConHieuLuc(ctx context.Context, tokenBam []byte) (string, 
 }
 
 const sqlTaoYeuCau = `
-	INSERT INTO yeu_cau (id, nguoi_dung_id, loai, quan_tam, quy_mo, ghi_chu, nguon_chien_dich)
-	VALUES ($1, $2, $3, $4, $5, $6, $7)
+	INSERT INTO yeu_cau (id, nguoi_dung_id, loai, quan_tam, quy_mo, ghi_chu, nguon_chien_dich, ten_hien_thi)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	RETURNING id`
 
 const sqlLichSuDau = `
@@ -100,6 +100,9 @@ func (k *Kho) TaoYeuCau(ctx context.Context, tt yeucau.ThongTinTao) (string, err
 		rongThanhNil(strings.TrimSpace(tt.QuyMo)),
 		rongThanhNil(strings.TrimSpace(tt.GhiChu)),
 		rongThanhNil(strings.TrimSpace(tt.NguonChienDich)),
+		// ten_hien_thi (0004): rỗng → NULL, vì CHECK cấm chuỗi rỗng — "không
+		// có tên" chỉ có một cách viết. CHECK cũng cấm tên trên loại khác chat.
+		rongThanhNil(strings.TrimSpace(tt.TenHienThi)),
 	).Scan(&id); err != nil {
 		// Lỗi của pgx nêu tên bảng/ràng buộc, không nêu giá trị tham số — nên
 		// nó được phép gói lại và đi lên. Nếu điều đó đổi, chỗ này phải đổi:

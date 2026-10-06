@@ -20,6 +20,7 @@ import (
 	"github.com/vihat/vihat-miniapp/internal/store"
 	"github.com/vihat/vihat-miniapp/internal/tongdai"
 	"github.com/vihat/vihat-miniapp/internal/vigovcau"
+	"github.com/vihat/vihat-miniapp/internal/webhook"
 	"github.com/vihat/vihat-miniapp/internal/yeucau"
 	"github.com/vihat/vihat-miniapp/internal/zalo"
 	"github.com/vihat/vihat-miniapp/internal/zns"
@@ -101,11 +102,22 @@ func chay(log *slog.Logger) error {
 		goiRa = congTongDai
 	}
 
+	// Webhook "yêu cầu mới" — cùng cái bẫy nil-interface ở trên. config.Nap đã
+	// từ chối nửa cấu hình và URL không phải https, nên ở đây nil chỉ còn nghĩa
+	// "tắt". In BẬT/TẮT, không in URL (có thể mang token ở chuỗi truy vấn).
+	var baoWebhook yeucau.BaoWebhook
+	if wh := webhook.Moi(cfg.WebhookURL, cfg.WebhookKhoa); wh != nil {
+		baoWebhook = wh
+	}
+	log.Info("webhook yêu cầu mới", "bat", baoWebhook != nil)
+
+	dvYeuCau := yeucau.Moi(kho, goiRa, guiZNS, log).VoiWebhook(baoWebhook)
+
 	// MỘT client Zalo cho app CHUNG, dùng cho cả đổi số điện thoại lẫn đổi vị
 	// trí: cùng secret, cùng lời gọi (internal/zalo, goiThongTin).
 	clientZalo := zalo.New("", cfg.ZaloSecretKey)
 	api := httpapi.Moi(kho, clientZalo, cfg, log).
-		VoiYeuCau(kho, yeucau.Moi(kho, goiRa, guiZNS, log)).
+		VoiYeuCau(kho, dvYeuCau).
 		VoiViTri(clientZalo)
 
 	// App RIÊNG của xã: mỗi app một client mang secret của chính nó. In SỐ app
@@ -174,6 +186,12 @@ func chay(log *slog.Logger) error {
 	defer huyTat()
 	if err := srv.Shutdown(ctxTat); err != nil {
 		return err
+	}
+	// Máy chủ đã ngừng nhận yêu cầu mới; chờ các lần báo webhook đang chạy nền
+	// xong trong phần thời hạn còn lại — không thì kho đóng (defer) giữa lúc
+	// chúng tra số, và sự kiện của những yêu cầu cuối cùng mất trong im lặng.
+	if err := dvYeuCau.ChoViecNen(ctxTat); err != nil {
+		log.Warn("tắt êm: còn lần báo webhook chưa xong", "loi", err.Error())
 	}
 	return <-loiChay
 }

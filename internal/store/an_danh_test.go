@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/vihat/vihat-miniapp/internal/phien"
+	"github.com/vihat/vihat-miniapp/internal/yeucau"
 )
 
 // Chạm CSDL thật — SKIP khi thiếu TEST_DATABASE_DSN (xem kho_test.go).
@@ -142,6 +144,86 @@ func TestAnDanhHoa_PhaiCoNguoiKy(t *testing.T) {
 	}
 	if !con {
 		t.Error("ghi nhật ký hỏng nhưng định danh đã bị ghi đè — ba việc không nằm chung một giao dịch")
+	}
+}
+
+// Yêu cầu xoá phải với tới cả chữ người dùng TỰ GÕ trên phiếu yêu cầu — ghi chú
+// và tên hiển thị Zalo (migrations/0004) — nhưng giữ hàng cho thống kê.
+func TestAnDanhHoa_XoaGhiChuVaTenTrenYeuCau(t *testing.T) {
+	k := moKhoTest(t)
+	ctx := context.Background()
+	so := soTest(t)
+
+	kq0, err := k.TaoPhienDangNhap(ctx, so, phien.Bam("token-yc-"+so), time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("mở phiên: %s", err)
+	}
+	maChat, err := k.TaoYeuCau(ctx, yeucau.ThongTinTao{
+		NguoiDungID: kq0.NguoiDungID, Loai: yeucau.LoaiChat, TenHienThi: "Nguyễn Văn A", GhiChu: "ghi chú riêng",
+	})
+	if err != nil {
+		t.Fatalf("ghi yêu cầu chat: %s", err)
+	}
+	if _, err := k.TaoYeuCau(ctx, yeucau.ThongTinTao{
+		NguoiDungID: kq0.NguoiDungID, Loai: yeucau.LoaiHuyUuDaiSMS,
+	}); err != nil {
+		t.Fatalf("ghi yêu cầu huỷ SMS: %s", err)
+	}
+
+	kq, err := k.AnDanhHoa(ctx, YeuCauAnDanh{SoDienThoai: so, NguonYeuCau: "hotline", NguoiThucHien: "NV-017"})
+	if err != nil {
+		t.Fatalf("ẩn danh: %s", err)
+	}
+	if kq.SoYeuCauAnDanh != 2 {
+		t.Errorf("ẩn danh %d phiếu, mong 2", kq.SoYeuCauAnDanh)
+	}
+
+	var ten, ghiChu *string
+	var daAnDanh bool
+	var loai string
+	if err := k.pool.QueryRow(ctx,
+		`SELECT ten_hien_thi, ghi_chu, an_danh_luc IS NOT NULL, loai FROM yeu_cau WHERE id = $1`, maChat,
+	).Scan(&ten, &ghiChu, &daAnDanh, &loai); err != nil {
+		t.Fatalf("đọc yeu_cau: %s", err)
+	}
+	if ten != nil || ghiChu != nil || !daAnDanh {
+		t.Errorf("phiếu chat sau ẩn danh: ten=%v ghi_chu=%v da_an_danh=%v", ten, ghiChu, daAnDanh)
+	}
+	if loai != yeucau.LoaiChat {
+		t.Errorf("hàng phải được GIỮ nguyên loại, nhận %q", loai)
+	}
+}
+
+// CHECK của 0004: tên hiển thị chỉ đi với chat, tối đa 100 ký tự; và đã ẩn danh
+// thì không còn tên. Ba rào ở CSDL, kiểm bằng CSDL.
+func TestYeuCau_RangBuocTenHienThi(t *testing.T) {
+	k := moKhoTest(t)
+	ctx := context.Background()
+	so := soTest(t)
+	kq0, err := k.TaoPhienDangNhap(ctx, so, phien.Bam("token-rb-"+so), time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("mở phiên: %s", err)
+	}
+
+	if _, err := k.TaoYeuCau(ctx, yeucau.ThongTinTao{
+		NguoiDungID: kq0.NguoiDungID, Loai: yeucau.LoaiTuVan, TenHienThi: "A",
+	}); err == nil {
+		t.Error("CSDL nhận tên hiển thị trên loại tu_van")
+	}
+	if _, err := k.TaoYeuCau(ctx, yeucau.ThongTinTao{
+		NguoiDungID: kq0.NguoiDungID, Loai: yeucau.LoaiChat, TenHienThi: strings.Repeat("ữ", 101),
+	}); err == nil {
+		t.Error("CSDL nhận tên 101 ký tự")
+	}
+	ma, err := k.TaoYeuCau(ctx, yeucau.ThongTinTao{
+		NguoiDungID: kq0.NguoiDungID, Loai: yeucau.LoaiChat, TenHienThi: strings.Repeat("ữ", 100),
+	})
+	if err != nil {
+		t.Fatalf("100 ký tự (300 byte) phải qua — trần đếm KÝ TỰ: %s", err)
+	}
+	if _, err := k.pool.Exec(ctx,
+		`UPDATE yeu_cau SET ghi_chu = NULL, an_danh_luc = now() WHERE id = $1`, ma); err == nil {
+		t.Error("đánh dấu ẩn danh mà còn tên — yeu_cau_an_danh_thi_sach không chặn")
 	}
 }
 

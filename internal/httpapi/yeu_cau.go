@@ -15,7 +15,8 @@ import (
 
 // BỀ MẶT "NGƯỜI DÙNG GIƠ TAY" — MỘT TÀI NGUYÊN, KHÔNG PHẢI HAI.
 //
-//	POST /api/v1/requests   tạo một yêu cầu (tư vấn HOẶC gọi lại)
+//	POST /api/v1/requests   tạo một yêu cầu (tư vấn · gọi lại · chat ·
+//	                        nhận / huỷ ưu đãi SMS)
 //	GET  /api/v1/requests   yêu cầu CỦA CHÍNH MÌNH
 //
 // Vì sao một tài nguyên với một trường `kind`, chứ không phải `/consultations`
@@ -46,11 +47,13 @@ const (
 )
 
 // Giá trị hợp lệ của `kind` trên dây. ÁNH XẠ SANG MÃ CỦA CSDL Ở ĐÚNG MỘT CHỖ
-// (`loaiTu`): tên trên dây và tên trong cột là hai từ vựng, và trộn chúng lại
-// nghĩa là đổi một cái thì cái kia gãy theo mà không có gì báo.
+// (`yeucau.LoaiTuKind` / `yeucau.KindTuLoai`): tên trên dây và tên trong cột là
+// hai từ vựng, và trộn chúng lại nghĩa là đổi một cái thì cái kia gãy theo mà
+// không có gì báo. Bảng ấy nằm ở `yeucau` chứ không ở đây vì webhook cũng nói
+// tên dây (07/10/2026).
 const (
-	kindTuVan  = "consult"
-	kindGoiLai = "callback"
+	kindTuVan  = yeucau.KindTuVan
+	kindGoiLai = yeucau.KindGoiLai
 )
 
 const (
@@ -82,6 +85,9 @@ type yeuCauTao struct {
 	Scale     string   `json:"scale"`
 	Note      string   `json:"note"`
 	Source    string   `json:"source"`
+	// DisplayName — tên hiển thị Zalo, CHỈ với kind "chat". Người dùng tự khai,
+	// KHÔNG phải định danh: định danh vẫn đến từ phiên. Dữ liệu cá nhân.
+	DisplayName string `json:"displayName"`
 }
 
 type phanHoiYeuCau struct {
@@ -136,17 +142,30 @@ func (s *Server) taoYeuCau(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tên hiển thị: CHỈ với chat, tối đa 100 KÝ TỰ (rune, như ghi chú). Gửi kèm
+	// loại khác là 400 chứ không lặng lẽ bỏ: một client gửi tên ở chỗ không cần
+	// là một client đang hiểu sai hợp đồng, và nói ra bây giờ rẻ hơn để một cái
+	// tên người nằm lại trên phiếu "huỷ nhận SMS".
+	tenHienThi := strings.TrimSpace(yc.DisplayName)
+	if tenHienThi != "" && (loai != yeucau.LoaiChat || utf8.RuneCountInString(tenHienThi) > yeucau.TranTenHienThi) {
+		s.traLoi(w, http.StatusBadRequest, loiTruongKhongHopLe)
+		return
+	}
+
 	tt := yeucau.ThongTinTao{
 		NguoiDungID:    nguoiDungID,
+		Loai:           loai,
 		QuanTam:        yc.Interests,
 		QuyMo:          strings.TrimSpace(yc.Scale),
 		GhiChu:         ghiChu,
 		NguonChienDich: strings.TrimSpace(yc.Source),
+		TenHienThi:     tenHienThi,
 	}
 
 	var ma string
 	var err error
-	if loai == yeucau.LoaiGoiLai {
+	switch loai {
+	case yeucau.LoaiGoiLai:
 		if !s.yeuCau.CoGoiLai() {
 			// Nhận phiếu rồi không ai gọi lại là tệ hơn hẳn việc nói thẳng ngay
 			// bây giờ, kèm một đường đi được: hotline.
@@ -154,8 +173,11 @@ func (s *Server) taoYeuCau(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ma, err = s.yeuCau.TaoGoiLai(r.Context(), tt)
-	} else {
+	case yeucau.LoaiTuVan:
 		ma, err = s.yeuCau.TaoTuVan(r.Context(), tt)
+	default:
+		// chat · nhận / huỷ ưu đãi SMS — ghi phiếu rồi báo webhook, thôi.
+		ma, err = s.yeuCau.TaoBamNut(r.Context(), tt)
 	}
 
 	if errors.Is(err, yeucau.ErrVuotTranGoiLai) {
@@ -169,7 +191,7 @@ func (s *Server) taoYeuCau(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Chỉ ghi MÃ. Không ghi `interests`, không ghi `scale`, và tuyệt đối không
-	// ghi `note` — ô ấy là văn bản tự do của người dùng.
+	// ghi `note` hay `displayName` — văn bản tự do và tên người.
 	s.log.Info("nhận yêu cầu", "ma_yeu_cau", ma, "loai", loai)
 
 	s.traJSON(w, http.StatusCreated, phanHoiYeuCau{
@@ -227,30 +249,9 @@ func (s *Server) requests(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// loaiTu đổi tên trên DÂY thành mã của CSDL. Một chiều, một chỗ.
-func loaiTu(kind string) (string, bool) {
-	switch kind {
-	case kindTuVan:
-		return yeucau.LoaiTuVan, true
-	case kindGoiLai:
-		return yeucau.LoaiGoiLai, true
-	default:
-		return "", false
-	}
-}
-
-// kindTu là chiều ngược lại. Giá trị lạ trả về chính nó thay vì chuỗi rỗng: một
-// hàng cũ mang mã ta chưa biết vẫn hiện lên được danh sách, thay vì biến mất.
-func kindTu(loai string) string {
-	switch loai {
-	case yeucau.LoaiTuVan:
-		return kindTuVan
-	case yeucau.LoaiGoiLai:
-		return kindGoiLai
-	default:
-		return loai
-	}
-}
+// loaiTu / kindTu — lối tắt tới bảng ánh xạ DUY NHẤT ở `yeucau`.
+func loaiTu(kind string) (string, bool) { return yeucau.LoaiTuKind(kind) }
+func kindTu(loai string) string         { return yeucau.KindTuLoai(loai) }
 
 // hopLeMaNgan: rỗng là hợp lệ (trường tuỳ chọn), có thì phải đúng khuôn mã.
 func hopLeMaNgan(v string) bool {

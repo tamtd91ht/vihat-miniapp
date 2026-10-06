@@ -1,10 +1,11 @@
-// Package yeucau giữ nghiệp vụ "người dùng giơ tay": yêu cầu tư vấn và yêu cầu
-// gọi lại.
+// Package yeucau giữ nghiệp vụ "người dùng giơ tay": yêu cầu tư vấn, yêu cầu
+// gọi lại, và ba lần "bấm rồi thôi" (chat · nhận / huỷ ưu đãi SMS, 07/10/2026).
 //
 // VÌ SAO NÓ LÀ MỘT GÓI RIÊNG CHỨ KHÔNG NẰM TRONG httpapi:
 //
-//	Hai việc ở đây CHẠM VÀO SỐ ĐIỆN THOẠI — tổng đài phải quay ra một máy thật,
-//	và ZNS phải gửi tới một máy thật. Ở 0001 có một bất biến đã được giữ suốt:
+//	Ba việc ở đây CHẠM VÀO SỐ ĐIỆN THOẠI — tổng đài phải quay ra một máy thật,
+//	ZNS phải gửi tới một máy thật, và webhook (07/10/2026) đưa số sang bên
+//	nhận để gửi SMS / gọi lại. Ở 0001 có một bất biến đã được giữ suốt:
 //	dữ liệu cá nhân DỪNG LẠI Ở TẦNG KHO, thứ đi lên tầng HTTP chỉ là mã định
 //	danh (xem phien.KetQuaTao). Gói này là chỗ DUY NHẤT phá lệ ấy, và nó phá lệ
 //	trong một phạm vi hẹp đo được: số đi từ kho, qua đúng một biến, thẳng xuống
@@ -26,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,11 +61,66 @@ const (
 )
 
 // Loại yêu cầu — đúng các giá trị ràng buộc CHECK của yeu_cau.loai chấp nhận
-// (migrations/0003). Lệch một chữ thì CSDL từ chối chứ không âm thầm nhận.
+// (migrations/0003, nới ở 0004). Lệch một chữ thì CSDL từ chối chứ không âm
+// thầm nhận.
 const (
 	LoaiTuVan  = "tu_van"
 	LoaiGoiLai = "goi_lai"
+
+	// Ba loại "bấm rồi thôi" (chủ sản phẩm chốt 07/10/2026): không biểu mẫu,
+	// không ZNS, không tổng đài — chỉ ghi phiếu và báo sang webhook. Xem
+	// `TaoBamNut`.
+	LoaiChat         = "chat"
+	LoaiNhanUuDaiSMS = "nhan_uu_dai_sms"
+	LoaiHuyUuDaiSMS  = "huy_uu_dai_sms"
 )
+
+// Tên `kind` trên DÂY (/api/v1/requests và webhook) — một từ vựng khác với mã
+// trong cột. ÁNH XẠ HAI CHIỀU Ở ĐÚNG MỘT CHỖ (`LoaiTuKind` / `KindTuLoai`): tầng
+// HTTP và bộ báo webhook cùng nói tên dây, và hai bảng ánh xạ là hai bảng sẽ
+// lệch — một loại mới thêm vào bảng này mà quên bảng kia thì webhook gửi đi mã
+// cột thay cho tên dây, và không gì đỏ lên.
+const (
+	KindTuVan        = "consult"
+	KindGoiLai       = "callback"
+	KindChat         = "chat"
+	KindNhanUuDaiSMS = "sms_promo"
+	KindHuyUuDaiSMS  = "sms_optout"
+)
+
+var loaiTheoKind = map[string]string{
+	KindTuVan:        LoaiTuVan,
+	KindGoiLai:       LoaiGoiLai,
+	KindChat:         LoaiChat,
+	KindNhanUuDaiSMS: LoaiNhanUuDaiSMS,
+	KindHuyUuDaiSMS:  LoaiHuyUuDaiSMS,
+}
+
+// LoaiTuKind đổi tên trên dây thành mã của CSDL. Tên lạ → false.
+func LoaiTuKind(kind string) (string, bool) {
+	loai, ok := loaiTheoKind[kind]
+	return loai, ok
+}
+
+// KindTuLoai là chiều ngược lại. Mã lạ trả về chính nó thay vì chuỗi rỗng: một
+// hàng mang mã ta chưa biết vẫn hiện lên được, thay vì biến mất.
+func KindTuLoai(loai string) string {
+	for k, l := range loaiTheoKind {
+		if l == loai {
+			return k
+		}
+	}
+	return loai
+}
+
+// laBamNut — ba loại đi đường `TaoBamNut`.
+func laBamNut(loai string) bool {
+	return loai == LoaiChat || loai == LoaiNhanUuDaiSMS || loai == LoaiHuyUuDaiSMS
+}
+
+// TranTenHienThi — trần ký tự (RUNE) của tên hiển thị Zalo. Trùng CHECK
+// yeu_cau_ten_hien_thi_co_tran ở migrations/0004.
+const TranTenHienThi = 100
 
 // Kết quả một lượt gửi ZNS — đúng các giá trị CHECK của zns_da_gui.ket_qua.
 const (
@@ -89,6 +146,30 @@ var ErrVuotTranGoiLai = errors.New("yeucau: vượt trần gọi lại trong c�
 type ThongTinTao struct {
 	NguoiDungID    string
 	Loai           string
+	QuanTam        []string
+	QuyMo          string
+	GhiChu         string
+	NguonChienDich string
+
+	// TenHienThi — tên hiển thị Zalo, CHỈ cho loại chat (CSDL cưỡng chế bằng
+	// yeu_cau_ten_hien_thi_chi_cho_chat). Người dùng TỰ KHAI, không phải định
+	// danh — định danh vẫn là NguoiDungID của phiên. Dữ liệu cá nhân: không log.
+	TenHienThi string
+}
+
+// SuKienYeuCau — thứ đi sang webhook sau khi một yêu cầu đã được ghi.
+//
+// Struct NGHIỆP VỤ, không mang thẻ JSON: hình dạng dây sống ở bộ điều hợp
+// (`internal/webhook`), cùng khuôn với zns/tongdai.
+//
+// ⚠ MANG SỐ ĐIỆN THOẠI, TÊN và GHI CHÚ. Nó được dựng ở đúng một chỗ
+// (`baoYeuCauMoi`), đi thẳng xuống bộ điều hợp, và không bao giờ vào log.
+type SuKienYeuCau struct {
+	MaYeuCau       string
+	Kind           string // tên trên DÂY, không phải mã cột
+	TaoLuc         time.Time
+	SoDienThoai    string
+	TenHienThi     string
 	QuanTam        []string
 	QuyMo          string
 	GhiChu         string
@@ -141,20 +222,38 @@ type BoGuiZNS interface {
 	MaMau() string
 }
 
+// BaoWebhook là bộ điều hợp báo "có yêu cầu mới" sang hệ thống bên nhận (bên gửi
+// SMS, bên gọi lại, bên mở cuộc chat). Cài đặt: internal/webhook.
+//
+// Gui chạy ĐỒNG BỘ (kể cả lần thử lại của nó); việc tách khỏi tuyến HTTP là của
+// `DichVu` — xem `baoYeuCauMoi`. Lỗi trả về KHÔNG được mang nội dung sự kiện.
+type BaoWebhook interface {
+	Gui(ctx context.Context, sk SuKienYeuCau) error
+}
+
+// ThoiHanBaoWebhook — trần cho CẢ việc nền một lần báo: tra số + mọi lượt gửi.
+// Rộng hơn hai lượt 5 giây của bộ điều hợp cộng một nhịp chờ, để chính bộ điều
+// hợp là thứ quyết định khi nào bỏ cuộc, không phải trần này.
+const ThoiHanBaoWebhook = 20 * time.Second
+
 // ---------------------------------------------------------------------------
 
-// DichVu điều phối ba việc: ghi phiếu, gọi ra, gửi tin.
+// DichVu điều phối bốn việc: ghi phiếu, gọi ra, gửi tin, báo webhook.
 //
-// `tongDai` và `zns` ĐƯỢC PHÉP nil, và đó không phải một thiếu sót: cả hai cần
-// cấu hình của bên thứ ba (tổng đài OmiCall, mẫu ZNS đã duyệt). Thiếu cấu hình
-// thì tính năng TẮT — hỏng về phía đóng — chứ không phải chạy giả vờ. Xem
-// `CoGoiLai`.
+// `tongDai`, `zns` và `webhook` ĐƯỢC PHÉP nil, và đó không phải một thiếu sót:
+// cả ba cần cấu hình của bên thứ ba. Thiếu cấu hình thì tính năng TẮT — hỏng về
+// phía đóng — chứ không phải chạy giả vờ. Xem `CoGoiLai`.
 type DichVu struct {
 	kho     Kho
 	tongDai TongDai
 	zns     BoGuiZNS
+	webhook BaoWebhook
 	log     *slog.Logger
 	now     func() time.Time
+
+	// viecNen đếm các lần báo webhook đang chạy nền — để tắt êm chờ được chúng
+	// (`ChoViecNen`) thay vì cắt ngang giữa một lần gửi.
+	viecNen sync.WaitGroup
 }
 
 func Moi(kho Kho, tongDai TongDai, zns BoGuiZNS, log *slog.Logger) *DichVu {
@@ -162,6 +261,33 @@ func Moi(kho Kho, tongDai TongDai, zns BoGuiZNS, log *slog.Logger) *DichVu {
 		log = slog.Default()
 	}
 	return &DichVu{kho: kho, tongDai: tongDai, zns: zns, log: log, now: time.Now}
+}
+
+// VoiWebhook bật việc báo mọi yêu cầu mới sang webhook. nil là tắt.
+//
+// Tách khỏi `Moi` cùng lý do httpapi.VoiYeuCau: mọi chỗ gọi `Moi` hiện có (và
+// test của chúng) giữ nguyên, và một hàm dựng năm tham số là hàm sẽ bị truyền
+// nhầm thứ tự. ⚠ Truyền GIAO DIỆN nil, không truyền con trỏ nil — xem khối
+// nil-interface ở cmd/server.
+func (d *DichVu) VoiWebhook(w BaoWebhook) *DichVu {
+	d.webhook = w
+	return d
+}
+
+// ChoViecNen chờ mọi lần báo webhook đang chạy nền xong, tối đa tới khi ctx hết.
+// Gọi lúc tắt êm, SAU khi máy chủ HTTP đã ngừng nhận yêu cầu mới.
+func (d *DichVu) ChoViecNen(ctx context.Context) error {
+	xong := make(chan struct{})
+	go func() {
+		d.viecNen.Wait()
+		close(xong)
+	}()
+	select {
+	case <-xong:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // CoGoiLai cho biết tuyến gọi lại có phục vụ được không.
@@ -178,6 +304,9 @@ func (d *DichVu) CoGoiLai() bool { return d.tongDai != nil }
 // điều đó thành chưa xảy ra. Nó để lại một dòng trong `zns_da_gui` để về sau
 // gửi lại được.
 func (d *DichVu) TaoTuVan(ctx context.Context, tt ThongTinTao) (string, error) {
+	if tt.TenHienThi != "" {
+		return "", ErrTenHienThiSaiLoai
+	}
 	tt.Loai = LoaiTuVan
 	tt.QuanTam = donDanhSach(tt.QuanTam)
 
@@ -186,8 +315,99 @@ func (d *DichVu) TaoTuVan(ctx context.Context, tt ThongTinTao) (string, error) {
 		return "", fmt.Errorf("ghi yêu cầu tư vấn: %w", err)
 	}
 
+	d.baoYeuCauMoi(ctx, ma, tt)
 	d.guiXacNhan(ctx, ma, tt.NguoiDungID)
 	return ma, nil
+}
+
+// ErrTenHienThiSaiLoai — tên hiển thị gửi kèm một loại không phải chat. Tầng
+// HTTP đã chặn trước (400); lỗi này là lớp thứ hai, trước cả CHECK của CSDL.
+var ErrTenHienThiSaiLoai = errors.New("yeucau: tên hiển thị chỉ đi kèm loại chat")
+
+// TaoBamNut ghi một yêu cầu "bấm rồi thôi" — chat, nhận ưu đãi SMS, huỷ ưu đãi
+// SMS — rồi báo webhook. tt.Loai PHẢI là một trong ba loại ấy.
+//
+// KHÔNG gửi ZNS, có chủ đích: một tin xác nhận cho lần bấm "huỷ nhận SMS" là
+// đúng thứ người dùng vừa từ chối, và lần bấm "chat" thì người dùng đang chờ
+// chính cuộc chat chứ không chờ một tin báo. Việc tiếp theo của cả ba thuộc về
+// bên nhận webhook.
+//
+// KHÔNG có trần nghiệp vụ riêng (chủ sản phẩm 07/10/2026): ba việc này không
+// quay số ra máy ai và không tốn tin trả tiền ở phía kho này; trần theo IP của
+// tầng HTTP đủ chặn máy quét.
+func (d *DichVu) TaoBamNut(ctx context.Context, tt ThongTinTao) (string, error) {
+	if !laBamNut(tt.Loai) {
+		return "", fmt.Errorf("yeucau: loại %q không đi đường bấm nút", tt.Loai)
+	}
+	if tt.TenHienThi != "" && tt.Loai != LoaiChat {
+		return "", ErrTenHienThiSaiLoai
+	}
+	tt.QuanTam = donDanhSach(tt.QuanTam)
+
+	ma, err := d.kho.TaoYeuCau(ctx, tt)
+	if err != nil {
+		return "", fmt.Errorf("ghi yêu cầu %s: %w", tt.Loai, err)
+	}
+	d.baoYeuCauMoi(ctx, ma, tt)
+	return ma, nil
+}
+
+// baoYeuCauMoi báo một yêu cầu ĐÃ GHI sang webhook, CHẠY NỀN.
+//
+// Ba điều không thương lượng:
+//
+//  1. CHỈ SAU KHI phiếu đã commit — bên gọi gọi hàm này sau `kho.TaoYeuCau`
+//     thành công. Báo trước khi ghi là báo một yêu cầu có thể không tồn tại.
+//  2. KHÔNG BAO GIỜ làm chậm hay hỏng tuyến HTTP: goroutine riêng, context
+//     tách khỏi yêu cầu (yêu cầu kết thúc thì context của nó bị huỷ, mà lúc ấy
+//     việc báo mới bắt đầu), trần `ThoiHanBaoWebhook`, và panic bị nuốt tại
+//     chỗ — một bộ điều hợp hỏng không được kéo sập tiến trình đang phục vụ.
+//  3. SỐ ĐIỆN THOẠI tra từ PHIÊN (`SoDeLienHe(tt.NguoiDungID)`), không từ thân
+//     yêu cầu — cùng luật với tổng đài và ZNS ở đầu gói. Log chỉ có mã yêu cầu
+//     và kết cục.
+func (d *DichVu) baoYeuCauMoi(ctx context.Context, ma string, tt ThongTinTao) {
+	if d.webhook == nil {
+		return // chưa cấu hình — tính năng tắt, chỉ ghi CSDL
+	}
+	taoLuc := d.now().UTC()
+	ctxNen := context.WithoutCancel(ctx)
+
+	d.viecNen.Add(1)
+	go func() {
+		defer d.viecNen.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				// KHÔNG in `r`: một panic giữa lúc dựng sự kiện có thể mang giá trị.
+				d.log.Error("báo webhook hỏng giữa chừng (panic)", "ma_yeu_cau", ma)
+			}
+		}()
+
+		ctx, huy := context.WithTimeout(ctxNen, ThoiHanBaoWebhook)
+		defer huy()
+
+		so, err := d.kho.SoDeLienHe(ctx, tt.NguoiDungID)
+		if err != nil {
+			d.log.Error("không tra được số để báo webhook", "ma_yeu_cau", ma, "loi", err.Error())
+			return
+		}
+
+		err = d.webhook.Gui(ctx, SuKienYeuCau{
+			MaYeuCau:       ma,
+			Kind:           KindTuLoai(tt.Loai),
+			TaoLuc:         taoLuc,
+			SoDienThoai:    so,
+			TenHienThi:     tt.TenHienThi,
+			QuanTam:        tt.QuanTam,
+			QuyMo:          strings.TrimSpace(tt.QuyMo),
+			GhiChu:         strings.TrimSpace(tt.GhiChu),
+			NguonChienDich: strings.TrimSpace(tt.NguonChienDich),
+		})
+		if err != nil {
+			d.log.Error("webhook không nhận sự kiện", "ma_yeu_cau", ma, "loi", err.Error())
+			return
+		}
+		d.log.Info("webhook đã nhận sự kiện", "ma_yeu_cau", ma)
+	}()
 }
 
 // TaoGoiLai kiểm trần, ghi phiếu, rồi bảo tổng đài quay số.
@@ -199,6 +419,9 @@ func (d *DichVu) TaoTuVan(ctx context.Context, tt ThongTinTao) (string, error) {
 func (d *DichVu) TaoGoiLai(ctx context.Context, tt ThongTinTao) (string, error) {
 	if d.tongDai == nil {
 		return "", errors.New("yeucau: chưa cấu hình tổng đài")
+	}
+	if tt.TenHienThi != "" {
+		return "", ErrTenHienThiSaiLoai
 	}
 
 	tu := d.now().Add(-CuaSoGoiLai)
@@ -217,6 +440,7 @@ func (d *DichVu) TaoGoiLai(ctx context.Context, tt ThongTinTao) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("ghi yêu cầu gọi lại: %w", err)
 	}
+	d.baoYeuCauMoi(ctx, ma, tt)
 
 	so, err := d.kho.SoDeLienHe(ctx, tt.NguoiDungID)
 	if err != nil {

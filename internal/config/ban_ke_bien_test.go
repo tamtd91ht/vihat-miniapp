@@ -45,6 +45,9 @@ var banKe = []struct {
 	{EnvVigovCauKhoa, true, true, "secret.example.yaml"},
 	// N cặp app riêng của xã — tuỳ chọn, BÍ MẬT (chứa secret), đòi cầu bật.
 	{EnvAppXa, true, true, "secret.example.yaml"},
+	// Hai biến TUỲ CHỌN của webhook "yêu cầu mới" — cả hai hoặc không biến nào.
+	{EnvWebhookURL, false, true, "configmap.example.yaml"},
+	{EnvWebhookKhoa, true, true, "secret.example.yaml"},
 	// Chỉ dùng cho `go test ./internal/store`. Không bao giờ lên cụm: một CSDL
 	// test khai báo trong môi trường sản xuất là một CSDL test sẽ bị ai đó ghi vào.
 	{"TEST_DATABASE_DSN", false, false, ""},

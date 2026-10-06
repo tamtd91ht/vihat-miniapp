@@ -37,6 +37,8 @@ giờ lên cụm**.
 | `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | `VIGOV_CITIZEN_SESSION_BRIDGE_ADDRESS` | ConfigMap (`optional: true`) | tuỳ chọn | **KHÔNG** — nhưng **đi cặp** với khoá bên dưới | cả hai trống: cầu tắt, đăng nhập như cũ. **Một nửa: không khởi động**. Danh sách `host:port` của **cổng cầu** identity, không phải cổng 9090 |
 | `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | `VIGOV_CITIZEN_SESSION_BRIDGE_KEY` | **Secret** (`optional: true`) | tuỳ chọn | **KHÔNG** — đi cặp với địa chỉ ở trên | như trên; khoá < 32 byte cũng không khởi động. **Không bao giờ** là `GRPC_CALLER_KEY` của ViGov |
 | `ZALO_MINIAPP_COMMUNE_APP_SECRETS` | `ZALO_MINIAPP_COMMUNE_APP_SECRETS` | **Secret** (`optional: true`) | tuỳ chọn | **KHÔNG** — app riêng của xã, `<app_id>=<secret>,…` | trống: không có app riêng, `appId` khác app chung nhận 422. **Có mà cầu tắt: không khởi động.** Sai khuôn (thiếu `=`, App ID không phải chữ số, trùng app chung, lặp): không khởi động, lỗi chỉ nêu vị trí phần tử. Thêm xã = sửa khoá này + `rollout restart` |
+| `REQUEST_WEBHOOK_URL` | `REQUEST_WEBHOOK_URL` | ConfigMap (`optional: true`) | tuỳ chọn | **KHÔNG** — **đi cặp** với khoá bên dưới | cả hai trống: không báo webhook, yêu cầu chỉ ghi CSDL. **Một nửa: không khởi động.** Không phải `https://` tuyệt đối có host (hoặc kèm `user:pass`): không khởi động |
+| `REQUEST_WEBHOOK_SECRET` | `REQUEST_WEBHOOK_SECRET` | **Secret** (`optional: true`) | tuỳ chọn | **KHÔNG** — đi cặp với URL ở trên | như trên; khoá < 32 byte cũng không khởi động. Bên nhận giữ cùng khoá để kiểm `X-Vihat-Signature` |
 | `TEST_DATABASE_DSN` | — | **không lên cụm** | tuỳ chọn, cho `make test-csdl` | **KHÔNG** | test chạm CSDL tự SKIP kèm lý do |
 
 Danh sách này bị khoá bằng phép kiểm: `internal/config/ban_ke_bien_test.go` bắt
