@@ -44,7 +44,7 @@ pipeline {
     NS = 'vigov-prod'
     // Tên Deployment THẬT trên cụm (dựng tay trong Rancher). Khác tên này thì stage 'Chuẩn bị'
     // dừng trước khi dựng và in cách tìm tên đúng.
-    TEN_K8S = 'vihat-miniapp'
+    TEN_K8S = 'vihat-zalo-miniapp'   // tên thật trong Rancher (lượt kiem-tra của vigov-deploy, 08/10/2026)
   }
 
   stages {
