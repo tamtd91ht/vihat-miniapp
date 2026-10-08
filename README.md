@@ -69,6 +69,12 @@ POST /api/v1/location          công khai, cùng lớp chắn với /sessions (x
         "appId": "<App ID>"}                             appId TUỲ CHỌN — vắng = app chung
   200: {"latitude": <số>, "longitude": <số>}      KHÔNG lưu gì — xem bảng lỗi bên dưới
 
+POST /api/v1/client-errors     công khai, 30 lượt / giờ / IP (xô riêng) — chỉ ghi MỘT dòng log
+  gửi: {"capability": "access-token" | "phone" | "location" | "name" | "camera" | "photos" | "other",
+        "code": <mã số của zmp-sdk>, "message": "<message của zmp-sdk>",
+        "appId": "<App ID>", "host": "<tên miền xã trên QR>"}      chỉ "code" là bắt buộc
+  204: không thân.   400 thiếu/sai "code" · 405 không phải POST · 429 vượt trần
+
 GET  /healthz                  công khai, cho thăm dò sức khoẻ
   200: {"trang_thai": "ok"}        503 khi không chạm được CSDL
 
@@ -156,6 +162,23 @@ so sánh thời gian hằng định. Chữ ký **không** kèm dấu thời gian
 
 Không bao giờ có mã lỗi kỹ thuật, tên cột, thông điệp của Zalo hay số điện thoại trong thân
 phản hồi.
+
+### `POST /api/v1/client-errors` — báo lỗi SDK Zalo để đọc trong Rancher
+
+Chủ dự án chốt ngày 08/10/2026. zmp-sdk trả **-1401** (`UNAUTHORIZED`) cho ít nhất ba nguyên nhân
+khác nhau khi `getAccessToken` hỏng (`zmp-sdk/apis/common/token.js`, 2.53.0). Chỉ `message` của SDK
+mới phân biệt được ba nguyên nhân ấy, mà `message` chỉ có trên máy người dân. Mini App gửi nó lên
+đây, và máy chủ ghi **một dòng `WARN`**. Trong Rancher, tìm theo tiền tố **`[ZALO_SDK_ERROR]`**.
+
+| Trường log | Lấy từ | Làm sạch |
+|---|---|---|
+| `capability` | thân | ngoài tập cố định thì ghi `unknown` |
+| `code` | thân | số nguyên, bắt buộc |
+| `sdk_message` | thân | tối đa 200 ký tự, bỏ ký tự điều khiển (không giả được dòng log thứ hai) |
+| `app_id` · `host` | thân | sai khuôn (`^[0-9]{1,32}$` · `^[a-z0-9.-]{1,253}$`) thì để rỗng |
+
+**Không lưu gì, không log IP**. Thân không có trường nào cho tên, số điện thoại hay token, và trường
+lạ bị bỏ qua. Tuyến này công khai vì lỗi được báo chính là lỗi khiến không mở được phiên.
 
 ### `POST /api/v1/location` — đổi token của `getLocation()` lấy toạ độ
 

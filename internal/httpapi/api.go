@@ -77,6 +77,9 @@ type Server struct {
 	// của chính nó. Rỗng là không có app riêng nào: hành vi y như trước.
 	appIDChung string
 	appXa      map[string]ZaloCuaApp
+
+	// Own bucket for client error reports — see client_errors.go.
+	clientErrorLimit *GioiHanIP
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -93,6 +96,8 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 		now:     time.Now,
 
 		appIDChung: cfg.ZaloAppID,
+
+		clientErrorLimit: MoiGioiHan(clientErrorMaxReports, clientErrorWindow),
 	}
 }
 
@@ -135,7 +140,7 @@ func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appI
 	return s
 }
 
-// Handler dựng bộ định tuyến. Ba tuyến CÔNG KHAI và một tuyến CẦN XÁC THỰC:
+// Handler dựng bộ định tuyến. Các tuyến CÔNG KHAI và một tuyến CẦN XÁC THỰC:
 //
 //	POST /api/v1/sessions — công khai vì đây CHÍNH LÀ tuyến đăng nhập: người gọi
 //	                        chưa có gì để xác thực. Thứ bảo vệ nó là token của
@@ -143,6 +148,9 @@ func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appI
 //	POST /api/v1/location — công khai, cùng lớp chắn với /sessions (token của
 //	                        Zalo + giới hạn theo IP, xô riêng). Đổi token của
 //	                        getLocation() lấy toạ độ; không lưu gì — vi_tri.go.
+//	POST /api/v1/client-errors — công khai: Mini App báo một lỗi có mã của zmp-sdk,
+//	                        máy chủ ghi một dòng log `[ZALO_SDK_ERROR]`, không lưu gì;
+//	                        30 lượt / giờ / IP, xô riêng — client_errors.go.
 //	GET  /healthz         — công khai cho thăm dò sức khoẻ của hạ tầng. Phản hồi
 //	                        không mang thông tin nội bộ: chỉ "ok" hoặc 503.
 //	     /webhooks/zalo   — công khai vì Zalo gọi từ hạ tầng của họ, không mang
@@ -165,6 +173,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/sessions", s.taoPhien)
 	mux.HandleFunc("/api/v1/location", s.viTri)
+	mux.HandleFunc("/api/v1/client-errors", s.clientErrors)
 	mux.HandleFunc("/api/v1/requests", s.gacYeuCau(s.requests))
 	mux.HandleFunc("/healthz", s.healthz)
 	s.mountWebhookZalo(mux)
