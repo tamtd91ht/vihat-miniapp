@@ -3,9 +3,12 @@
 //   · build CÁI GÌ   — đúng một ảnh, `vihat-miniapp`
 //   · build KHI NÀO  — mọi lần `main` nhích lên. Xem §"Vì sao KHÔNG có bộ lọc dựng lại"
 //   · đẩy ĐI ĐÂU     — hằng số REGISTRY/PROJECT trong khối `environment` ngay dưới
+//   · chạy lên ĐÂU    — hằng số KUBECONFIG/NS/TEN_K8S cùng khối
 //
-// PHẠM VI DỪNG Ở ẢNH. Không `kubectl apply`, không đụng cụm — đó là việc của devops, và một
-// job vừa đóng ảnh vừa triển khai là một job không ai dám bấm lại.
+// TỪ 08/10/2026 JOB ĐẶT ẢNH LÊN CỤM (chủ dự án: "build jenkins thì k8s tự kéo ảnh từ harbor về
+// deploy luôn"), cùng cách các job dịch vụ của ViGov đang chạy: `kubectl set image` +
+// `rollout status`, đỏ thì `rollout undo`. Chỉ đổi ảnh, KHÔNG `kubectl apply`: Deployment,
+// Service, Secret, ConfigMap vẫn dựng tay (deploy/README.md). KHÔNG chạy migration — xem cuối tệp.
 
 pipeline {
   agent any
@@ -33,6 +36,15 @@ pipeline {
     PROJECT  = 'ci'
     DOCKER_BUILDKIT = '1'
     TEN_ANH = 'vihat-miniapp'
+
+    // Cùng cụm, cùng namespace với ViGov: cầu phiên tới identity đi không TLS nên chỉ chấp nhận
+    // được khi hai bên cùng namespace (ADR 0045 của ViGov). KUBECONFIG là tệp trên đĩa máy chủ
+    // mà các job ViGov đang dùng; cạnh nó là `rancher-omi.yaml` của dự án khác — đừng chép nhầm.
+    KUBECONFIG = '/u01/rancher/rancher-vigov.yaml'
+    NS = 'vigov-prod'
+    // Tên Deployment THẬT trên cụm (dựng tay trong Rancher). Khác tên này thì stage 'Chuẩn bị'
+    // dừng trước khi dựng và in cách tìm tên đúng.
+    TEN_K8S = 'vihat-miniapp'
   }
 
   stages {
@@ -76,7 +88,30 @@ pipeline {
             exit 1
           fi
         '''
+        // CỤM kiểm RA MẶT, TRƯỚC khi dựng: thiếu KUBECONFIG thì `kubectl` rơi về `~/.kube/config`
+        // (có thể là cụm khác), và thiếu Deployment thì một lượt tốn cả cổng kiểm lẫn đóng ảnh rồi
+        // mới biết không có chỗ đặt. In NGUYÊN VĂN lỗi của cụm: Forbidden và NotFound sửa ở hai chỗ.
+        sh '''
+          set -eu
+          command -v kubectl >/dev/null 2>&1 || { echo "MÁY CHỦ BUILD THIẾU: kubectl"; exit 1; }
+          if [ ! -r "$KUBECONFIG" ]; then
+            echo "KHÔNG ĐỌC ĐƯỢC KUBECONFIG: $KUBECONFIG"
+            exit 1
+          fi
+          echo "cụm: $(kubectl config current-context) · namespace: $NS"
+          if ! loi=$(kubectl -n "$NS" get deploy/"$TEN_K8S" -o name 2>&1); then
+            echo ""
+            echo "cụm trả lời: $loi"
+            echo "KHÔNG ĐỌC ĐƯỢC deploy/$TEN_K8S TRONG NAMESPACE $NS."
+            echo "Deployment trong Rancher mang tên khác? Xem:  kubectl -n $NS get deploy | grep -i miniapp"
+            echo "rồi sửa hằng số TEN_K8S trong Jenkinsfile này."
+            echo ""
+            exit 1
+          fi
+        '''
         script {
+          // Cờ cho `post { failure }`: chỉ rút lại khi CỤM ĐÃ ĐỔI.
+          env.DA_DAT = 'chua'
           env.TAG = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
           if (!env.TAG) { error('Không lấy được commit hiện tại — không có thẻ ảnh nào để đặt.') }
           echo "vihat-miniapp · commit ${env.TAG}"
@@ -160,6 +195,50 @@ pipeline {
         // khi có người hỏi sáu tuần sau.
         script { currentBuild.description = "anh-tu-commit:${env.TAG}" }
         echo "DA DAY  ${env.ANH}"
+      }
+    }
+
+    stage('Triển khai') {
+      steps {
+        // Ghi ảnh ĐANG chạy trước khi đổi: sau một lượt đỏ, câu đầu tiên là "trước đó chạy bản nào".
+        sh '''
+          set -eu
+          echo "trước lượt này: $(kubectl -n "$NS" get deploy/"$TEN_K8S" \
+              -o jsonpath='{.spec.template.spec.containers[*].image}')"
+        '''
+
+        // TỪ DÒNG NÀY CỤM ĐÃ ĐỔI — từ đây `post { failure }` mới được phép rút lại.
+        script { env.DA_DAT = 'roi' }
+
+        // `*=`: mọi container của Deployment — tên container trên Deployment dựng tay không chắc
+        // là `server` như manifest, và Deployment này chỉ có một container.
+        sh 'kubectl -n "$NS" set image deploy/"$TEN_K8S" "*=$ANH"'
+        // startupProbe của manifest cho tối đa 60 × 5s chờ CSDL.
+        sh 'kubectl -n "$NS" rollout status deploy/"$TEN_K8S" --timeout=6m'
+
+        script { currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.TAG} → ${env.NS}" }
+        echo "XONG  ${env.ANH} đang chạy ở ${env.NS}/${env.TEN_K8S}"
+      }
+    }
+  }
+
+  post {
+    failure {
+      // Chạy cho MỌI stage đỏ, kể cả cổng kiểm. Không có cờ `DA_DAT` thì một test đỏ cũng
+      // `rollout undo` — rút lại đúng bản ĐANG CHẠY TỐT.
+      script {
+        if (env.DA_DAT != 'roi') {
+          echo 'Đỏ TRƯỚC khi chạm cụm — không có gì để rút lại.'
+        } else {
+          sh '''
+            set +e
+            echo "THẤT BẠI — quay lại bản trước ở cụm"
+            kubectl -n "$NS" rollout undo deploy/"$TEN_K8S"
+            kubectl -n "$NS" rollout status deploy/"$TEN_K8S" --timeout=5m
+            exit 0
+          '''
+          currentBuild.displayName = "#${env.BUILD_NUMBER} ĐỎ ${env.TAG} → ${env.NS} · đã rollout undo"
+        }
       }
     }
   }
