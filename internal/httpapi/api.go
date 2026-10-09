@@ -90,7 +90,7 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 		kho:     kho,
 		zalo:    zalo,
 		gioiHan: MoiGioiHan(SoLuotToiDa, CuaSoGioiHan),
-		cors:    moCORS(cfg.CORSAllowedOrigins),
+		cors:    moCORS(cfg.CORSAllowedOrigins, log),
 		log:     log,
 		ttl:     config.TTLPhien,
 		now:     time.Now,

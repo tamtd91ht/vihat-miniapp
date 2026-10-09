@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -21,14 +22,15 @@ import (
 // bề mặt tấn công (CSRF) mà ta không cần tới.
 type cors struct {
 	duocPhep map[string]struct{}
+	log      *slog.Logger
 }
 
-func moCORS(origins []string) *cors {
+func moCORS(origins []string, log *slog.Logger) *cors {
 	m := make(map[string]struct{}, len(origins))
 	for _, o := range origins {
 		m[chuanHoaOrigin(o)] = struct{}{}
 	}
-	return &cors{duocPhep: m}
+	return &cors{duocPhep: m, log: log}
 }
 
 func chuanHoaOrigin(o string) string {
@@ -58,6 +60,15 @@ func (c *cors) boc(tiep http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Methods", methodChoPhep)
 				w.Header().Set("Access-Control-Allow-Headers", headerChoPhep)
 				w.Header().Set("Access-Control-Max-Age", maxAgePreflight)
+			} else if c.log != nil {
+				// GHI LOG origin bị từ chối. Câu TRẢ LỜI vẫn im lặng (không lộ danh sách), nhưng
+				// LOG mà im lặng thì chính là lỗi 09/10/2026: bản Mini App phát hành chạy ở một
+				// origin không có trong danh sách, mọi lời gọi chết trong trình duyệt thành "lỗi
+				// mạng", và máy chủ không có một dòng nào. Chỉ origin và phương thức — không ghi
+				// đường dẫn hay header nào khác.
+				c.log.WarnContext(r.Context(), "CORS: từ chối origin không có trong CORS_ALLOWED_ORIGINS — "+
+					"trình duyệt sẽ chặn, Mini App thấy lỗi mạng", "origin", origin, "phuong_thuc", r.Method,
+					"preflight", r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "")
 			}
 		}
 

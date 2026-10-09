@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,5 +126,36 @@ func TestGioiHanIP_DonXoCu(t *testing.T) {
 	g.mu.Unlock()
 	if con != 1 {
 		t.Errorf("còn %d xô, mong 1 — xô cũ chưa được dọn", con)
+	}
+}
+
+// Origin lạ phải để lại MỘT dòng WARN có origin (09/10/2026: bản phát hành bị chặn CORS mà máy chủ
+// không có dòng log nào); origin được phép thì im lặng. Không ghi đường dẫn.
+func TestCORS_GhiLogOriginBiTuChoi(t *testing.T) {
+	var buf bytes.Buffer
+	c := moCORS([]string{"https://h5.zdn.vn"}, slog.New(slog.NewTextHandler(&buf, nil)))
+	h := c.boc(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	r := httptest.NewRequest(http.MethodOptions, "/api/v1/sessions", nil)
+	r.Header.Set("Origin", "https://h5.zadn.vn")
+	r.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	logged := buf.String()
+	for _, want := range []string{"level=WARN", "origin=https://h5.zadn.vn", "preflight=true"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("log thiếu %q: %s", want, logged)
+		}
+	}
+	if strings.Contains(logged, "/api/v1/sessions") {
+		t.Errorf("log ghi cả đường dẫn: %s", logged)
+	}
+
+	buf.Reset()
+	r = httptest.NewRequest(http.MethodOptions, "/api/v1/sessions", nil)
+	r.Header.Set("Origin", "https://h5.zdn.vn")
+	r.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if buf.Len() != 0 {
+		t.Errorf("origin được phép không được ghi log: %s", buf.String())
 	}
 }
