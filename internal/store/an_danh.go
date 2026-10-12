@@ -40,7 +40,9 @@ type KetQuaAnDanh struct {
 	// SoYeuCauAnDanh — số phiếu yeu_cau của người ấy vừa bị xoá ghi chú và tên
 	// hiển thị (migrations/0003, 0004).
 	SoYeuCauAnDanh int
-	ThoiDiem       time.Time
+	// PhotosErased — request_photo rows whose bytes were just erased (migrations/0005).
+	PhotosErased int
+	ThoiDiem     time.Time
 }
 
 // ErrKhongTimThayNguoiDung: không có ai ứng với số ấy — có thể vì chưa từng
@@ -88,6 +90,20 @@ const sqlAnDanhYeuCau = `
 	 WHERE nguoi_dung_id = $1
 	   AND an_danh_luc IS NULL`
 
+// Photos attached to the person's requests (0005): the bytes and their hash go, the row
+// stays ("this request had 2 photos"). A photo may show the person, their house, their
+// plate — it is personal data like the note. CHECK request_photo_anonymised_is_empty
+// refuses a mark-without-erase, the same wall as yeu_cau_an_danh_thi_sach.
+const sqlAnonymisePhotos = `
+	UPDATE request_photo p
+	   SET data          = NULL,
+	       sha256        = NULL,
+	       anonymised_at = now()
+	  FROM yeu_cau y
+	 WHERE p.request_id = y.id
+	   AND y.nguoi_dung_id = $1
+	   AND p.anonymised_at IS NULL`
+
 const sqlGhiNhatKyAnDanh = `
 	INSERT INTO nhat_ky_an_danh (nguoi_dung_id, nguon_yeu_cau, nguoi_thuc_hien, ghi_chu)
 	VALUES ($1, $2, $3, $4)
@@ -97,9 +113,9 @@ const sqlGhiNhatKyAnDanh = `
 // phiên, xoá chữ người dùng tự gõ trên các phiếu yêu cầu (ghi chú, tên hiển
 // thị — 07/10/2026), ghi bằng chứng đã xử lý yêu cầu.
 //
-// ⚠ Cần lược đồ tới 0004 (`make migrate`): câu ẩn danh yeu_cau chạm cột
-// ten_hien_thi. Thiếu 0004 thì lệnh hỏng và cuộn lại trọn vẹn — không có nửa
-// ẩn danh.
+// ⚠ Cần lược đồ tới 0005 (`make migrate`): câu ẩn danh yeu_cau chạm cột
+// ten_hien_thi (0004), câu ẩn danh ảnh chạm request_photo (0005). Thiếu thì lệnh
+// hỏng và cuộn lại trọn vẹn — không có nửa ẩn danh.
 //
 // Một giao dịch vì hai nửa của việc này không được phép rời nhau: ẩn danh mà
 // không thu hồi phiên là chưa xoá; thu hồi phiên mà không ghi ai đã ra lệnh là
@@ -128,6 +144,11 @@ func (k *Kho) AnDanhHoa(ctx context.Context, yc YeuCauAnDanh) (KetQuaAnDanh, err
 		return kq, fmt.Errorf("thu hồi phiên: %w", err)
 	}
 
+	thePhotos, err := tx.Exec(ctx, sqlAnonymisePhotos, id)
+	if err != nil {
+		return kq, fmt.Errorf("ẩn danh request_photo: %w", err)
+	}
+
 	theYC, err := tx.Exec(ctx, sqlAnDanhYeuCau, id)
 	if err != nil {
 		return kq, fmt.Errorf("ẩn danh yeu_cau: %w", err)
@@ -145,6 +166,7 @@ func (k *Kho) AnDanhHoa(ctx context.Context, yc YeuCauAnDanh) (KetQuaAnDanh, err
 	kq.NguoiDungID = id
 	kq.SoPhienThuHoi = int(the.RowsAffected())
 	kq.SoYeuCauAnDanh = int(theYC.RowsAffected())
+	kq.PhotosErased = int(thePhotos.RowsAffected())
 	return kq, nil
 }
 

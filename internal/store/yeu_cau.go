@@ -143,7 +143,11 @@ func (k *Kho) DemTrongCuaSo(ctx context.Context, nguoiDungID, loai string, tu ti
 }
 
 const sqlDanhSachCuaToi = `
-	SELECT id, loai, trang_thai, tao_luc
+	SELECT id, loai, trang_thai, tao_luc,
+	       -- needs migrations/0005: a server built from here on a 0004 schema fails
+	       -- this list loudly instead of hiding the photos
+	       (SELECT count(*) FROM request_photo p
+	         WHERE p.request_id = yeu_cau.id AND p.anonymised_at IS NULL) AS photo_count
 	  FROM yeu_cau
 	 WHERE nguoi_dung_id = $1
 	 ORDER BY tao_luc DESC
@@ -176,7 +180,7 @@ func (k *Kho) DanhSachCuaToi(ctx context.Context, nguoiDungID string, tran int) 
 	for hang.Next() {
 		var ma pgtype.UUID
 		var t yeucau.TomTat
-		if err := hang.Scan(&ma, &t.Loai, &t.TrangThai, &t.TaoLuc); err != nil {
+		if err := hang.Scan(&ma, &t.Loai, &t.TrangThai, &t.TaoLuc, &t.PhotoCount); err != nil {
 			return nil, fmt.Errorf("đọc dòng yeu_cau: %w", err)
 		}
 		t.Ma = chuoiUUID(ma)

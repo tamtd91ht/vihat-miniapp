@@ -187,6 +187,9 @@ type TomTat struct {
 	Loai      string
 	TrangThai string
 	TaoLuc    time.Time
+	// PhotoCount — photos attached (migrations/0005), not counting anonymised ones. A
+	// count, never the photos: the list only needs to say "2 ảnh".
+	PhotoCount int
 }
 
 // Kho là phần kho dữ liệu gói này cần.

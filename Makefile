@@ -78,7 +78,8 @@ migrate:
 		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0001_init.sql && \
 		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0002_nhat_ky_90_ngay_va_an_danh.sql && \
 		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0003_yeu_cau.sql && \
-		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0004_yeu_cau_chat_sms.sql'
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0004_yeu_cau_chat_sms.sql && \
+		psql "$$DATABASE_DSN" -v ON_ERROR_STOP=1 -f migrations/0005_request_photo.sql'
 
 ## don-nhat-ky — CHẠY HẰNG NGÀY trong cron. KHÔNG phải "hằng tuần cũng được":
 ## khoảng cách giữa hai lần chạy cộng thẳng vào tuổi của dòng cũ nhất, nên chạy

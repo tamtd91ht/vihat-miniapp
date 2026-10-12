@@ -118,6 +118,7 @@ func chay(log *slog.Logger) error {
 	clientZalo := zalo.New("", cfg.ZaloSecretKey)
 	api := httpapi.Moi(kho, clientZalo, cfg, log).
 		VoiYeuCau(kho, dvYeuCau).
+		WithRequestPhotos(kho). // needs migrations/0005
 		VoiViTri(clientZalo)
 
 	// App RIÊNG của xã: mỗi app một client mang secret của chính nó. In SỐ app

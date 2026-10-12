@@ -144,6 +144,7 @@ func chay(ctx context.Context, in io.Reader, out io.Writer, kho khoAnDanh) error
 	fmt.Fprintln(out, "  người dùng     : "+kq.NguoiDungID)
 	fmt.Fprintf(out, "  phiên thu hồi  : %d\n", kq.SoPhienThuHoi)
 	fmt.Fprintf(out, "  yêu cầu ẩn danh: %d\n", kq.SoYeuCauAnDanh)
+	fmt.Fprintf(out, "  ảnh đã xoá     : %d\n", kq.PhotosErased)
 	fmt.Fprintln(out, "  thời điểm      : "+kq.ThoiDiem.UTC().Format(time.RFC3339))
 	return nil
 }

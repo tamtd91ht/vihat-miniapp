@@ -80,6 +80,10 @@ type Server struct {
 
 	// Own bucket for client error reports — see client_errors.go.
 	clientErrorLimit *GioiHanIP
+
+	// Photos on a consult request — see request_photos.go. nil = not wired: the routes
+	// still exist and answer 503.
+	photos RequestPhotoStore
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -161,6 +165,8 @@ func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appI
 //	/api/v1/requests      — CẦN XÁC THỰC. POST tạo một yêu cầu, GET đọc yêu cầu
 //	                        CỦA CHÍNH MÌNH. Bọc bởi `doiPhien`, và hai lớp giới
 //	                        hạn: theo IP ở đây, theo NGƯỜI ở internal/yeucau.
+//	/api/v1/requests/{id}/photos[/{photoId}] — CẦN XÁC THỰC, cùng `gacYeuCau`. Ảnh
+//	                        đính kèm yêu cầu tư vấn, chỉ của CHÍNH MÌNH — request_photos.go.
 //
 // ⚠ TUYẾN `/api/v1/requests` LUÔN ĐƯỢC GẮN, KỂ CẢ KHI `VoiYeuCau` CHƯA ĐƯỢC GỌI.
 //
@@ -175,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/location", s.viTri)
 	mux.HandleFunc("/api/v1/client-errors", s.clientErrors)
 	mux.HandleFunc("/api/v1/requests", s.gacYeuCau(s.requests))
+	// /api/v1/requests/{id}/photos[/{photoId}] — same IP bucket, same bearer check.
+	mux.HandleFunc(requestPhotosPrefix, s.gacYeuCau(s.requestSubtree))
 	mux.HandleFunc("/healthz", s.healthz)
 	s.mountWebhookZalo(mux)
 	return s.cors.boc(mux)

@@ -87,7 +87,15 @@ POST /api/v1/requests          CẦN XÁC THỰC — Authorization: Bearer <toke
   201: {"requestId": "<uuid>", "kind": "...", "status": "moi", "createdAt": "<RFC3339>"}
 
 GET  /api/v1/requests          CẦN XÁC THỰC — CHỈ yêu cầu của chính người đăng nhập
-  200: {"items": [{"requestId", "kind", "status", "createdAt"}]}   rỗng là [], không phải null
+  200: {"items": [{"requestId", "kind", "status", "createdAt", "photoCount"}]}   rỗng là [], không phải null
+       (201 của POST cũng mang "photoCount": 0)
+
+POST /api/v1/requests/{requestId}/photos        CẦN XÁC THỰC — cùng bearer, cùng xô IP 20/5 phút
+  multipart/form-data, ĐÚNG MỘT phần tên "photo" (một ảnh mỗi lượt, gửi SAU khi đã có requestId)
+  201: {"photoId", "requestId", "position": 1..3, "contentType", "size", "createdAt"}
+GET  /api/v1/requests/{requestId}/photos        200: {"items": [<như trên>]}   rỗng là []
+GET  /api/v1/requests/{requestId}/photos/{photoId}   200: byte ảnh, Content-Type đã dò,
+                                                      Cache-Control: private, no-store
 ```
 
 ⚠ **Thân yêu cầu KHÔNG có, và sẽ không bao giờ có, một trường nói "tôi là ai".** Mã định danh
@@ -120,6 +128,42 @@ nhất, `internal/yeucau` (`LoaiTuKind` / `KindTuLoai`).
 | 503 | `kind=callback` mà chưa cấu hình tổng đài, hoặc chưa gọi `VoiYeuCau` | Chức năng … đang tạm ngưng. Vui lòng gọi hotline… |
 
 Lỗi trả về `{"message": "<câu tiếng Việt nói người dùng làm gì tiếp>"}`.
+
+### Ảnh đính kèm yêu cầu "Tư vấn và báo giá" (chủ sản phẩm chốt 12/10/2026)
+
+Lý do dùng quyền camera / thư viện ảnh trong hồ sơ duyệt Zalo. Mã: `internal/httpapi/request_photos.go`
+(tuyến), `internal/photo` (dò kiểu, bỏ siêu dữ liệu), `internal/store/request_photo.go`,
+`migrations/0005_request_photo.sql`.
+
+| Điều | Giá trị | Vì sao |
+|---|---|---|
+| Số ảnh | **tối đa 3** mỗi yêu cầu — CHECK + UNIQUE ở CSDL, khoá hàng `yeu_cau` khi đếm | hai lần tải song song không lọt ảnh thứ tư |
+| Cỡ | **≤ 5 MB** mỗi ảnh (byte tải lên) | thân multipart có trần 5 MB + 64 KB |
+| Kiểu | **JPEG / PNG / WebP**, dò từ **byte đầu** (số ma thuật) | tên tệp và Content-Type của client không được tin |
+| Siêu dữ liệu | **bỏ** EXIF/XMP/COM (JPEG), eXIf/tEXt/zTXt/iTXt/tIME (PNG), EXIF/XMP (WebP); điểm ảnh chép nguyên, **không mã hoá lại** | EXIF mang toạ độ GPS nơi chụp. Cái giá: mất cờ xoay EXIF — ảnh chụp dọc có thể hiện nằm ngang |
+| Loại yêu cầu | chỉ `consult` (`tu_van`) | đúng màn đã chốt; loại khác → 409 `photo_not_allowed` |
+| Ai đọc | **chỉ chủ phiếu**, qua phiên; mọi câu SQL có `nguoi_dung_id` của phiên | phiếu của người khác / không có / đã ẩn danh: **cùng một** 404 |
+| Lưu | `bytea` trong `request_photo`, giữ **bằng hạn của yêu cầu** (24 tháng) | không có kho đối tượng; ẩn danh nằm cùng giao dịch |
+| Xoá | `make an-danh` và hàm dọn 24 tháng **xoá byte + sha256**, giữ hàng | ảnh là dữ liệu cá nhân (người, nhà, biển số) |
+| Log | chỉ mã yêu cầu, mã ảnh, kiểu, số byte | **không** tên tệp của client, **không** byte |
+
+| Mã HTTP | `code` | Khi nào |
+|---|---|---|
+| 400 | `invalid_upload` | không phải multipart · thiếu phần `photo` · phần rỗng · có phần khác · hai phần `photo` |
+| 401 | — (`message`) | không có / sai bearer |
+| 404 | `not_found` | phiếu không phải của mình / không có / đã ẩn danh · ảnh không có · đường dẫn lạ |
+| 405 | `method_not_allowed` | phương thức khác GET/POST |
+| 409 | `photo_limit` | đã đủ 3 ảnh |
+| 409 | `photo_not_allowed` | phiếu không phải `consult` |
+| 413 | `file_too_large` | ảnh > 5 MB |
+| 415 | `unsupported_photo_type` | byte không phải JPEG/PNG/WebP (HEIC, GIF, video…) |
+| 422 | `photo_unreadable` | byte bắt đầu như ảnh nhưng cấu trúc hỏng / cụt |
+| 429 | — (`message`) | vượt xô IP chung với `/api/v1/requests` |
+| 500 | `internal_error` | lỗi phía hệ thống |
+| 503 | `photo_unavailable` | `cmd/server` chưa gọi `WithRequestPhotos` |
+
+Lỗi có `code` trả `{"code": "<mã ổn định>", "message": "<câu tiếng Việt>"}`. Client ánh xạ theo
+`code`; không đổi tên một mã đã phát hành, chỉ thêm mã mới.
 
 ### Webhook "yêu cầu mới" — khi `REQUEST_WEBHOOK_*` được đặt
 
@@ -603,8 +647,9 @@ hồ sơ duyệt Zalo, và khai thiếu một mục cũng là vi phạm chính N
 | **Tên hiển thị Zalo** khi bấm "Chat với chuyên viên" (0004) | `yeu_cau.ten_hien_thi` | **chưa — phải bổ sung** |
 | **Lần đăng ký / huỷ nhận SMS ưu đãi** (0004) | `yeu_cau.loai` | **chưa — phải bổ sung** |
 | Số điện thoại, tên hiển thị, ghi chú **gửi sang hệ thống bên nhận webhook** | không lưu ở đây — **chuyển cho bên thứ ba** | **chưa — phải bổ sung**, kèm tên bên nhận |
+| **Ảnh người dùng đính kèm** yêu cầu tư vấn (0005), đã bỏ EXIF/GPS | `request_photo.data` | **chưa — phải bổ sung** (đi kèm hồ sơ duyệt quyền camera/ảnh) |
 
-Không lưu: email, vị trí, thông tin thiết bị, danh bạ, ảnh. Không có bộ theo dõi
+Không lưu: email, vị trí, thông tin thiết bị, danh bạ. Không có bộ theo dõi
 (analytics/SDK bên thứ ba) nào trong dịch vụ này.
 
 ### Thời hạn lưu — chủ sản phẩm đã chốt 20/09/2026
@@ -793,3 +838,13 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
 18. **Migration 0004 chưa chạy trên Postgres thật** (cùng nợ với 0001–0003, mục 8): hai ca
     `internal/store` mới (`TestAnDanhHoa_XoaGhiChuVaTenTrenYeuCau`, `TestYeuCau_RangBuocTenHienThi`)
     SKIP khi thiếu `TEST_DATABASE_DSN`.
+19. **Ảnh đính kèm (0005, 12/10/2026) — ba điều còn mở.** (a) **Chuyên viên ViHAT chưa có đường
+    đọc ảnh**: kho này không có màn quản trị, và webhook `request.created` bắn lúc tạo phiếu —
+    TRƯỚC khi ảnh được tải. Hôm nay chỉ đọc được bằng truy cập CSDL. Cần chủ sản phẩm chốt: một
+    sự kiện webhook `request.photo_added` kèm đường tải có ký, hay một tuyến quản trị riêng.
+    (b) **Không có trần ảnh theo người**: trần duy nhất là xô IP 20/5 phút và 3 ảnh/phiếu, mà số
+    phiếu tư vấn thì không có trần — về lý thuyết một phiên tải được ~20 × 5 MB mỗi 5 phút. Cần
+    chốt một trần ngày theo người nếu lưu lượng thật cho thấy lạm dụng. (c) Migration 0005
+    **chưa chạy trên Postgres thật**; ba ca `internal/store` mới SKIP khi thiếu `TEST_DATABASE_DSN`.
+    Máy chủ dựng từ bản này trên lược đồ 0004 sẽ HỎNG `GET /api/v1/requests` (câu đếm ảnh) — chạy
+    0005 TRƯỚC khi rollout.

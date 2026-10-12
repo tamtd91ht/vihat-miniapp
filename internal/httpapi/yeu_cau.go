@@ -95,6 +95,9 @@ type phanHoiYeuCau struct {
 	Kind      string `json:"kind"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"createdAt"`
+	// PhotoCount — photos attached to this request (0005). Always present; 0 on create,
+	// since photos go up after the request exists (request_photos.go).
+	PhotoCount int `json:"photoCount"`
 }
 
 type phanHoiDanhSach struct {
@@ -227,10 +230,11 @@ func (s *Server) danhSachYeuCau(w http.ResponseWriter, r *http.Request) {
 	items := make([]phanHoiYeuCau, 0, len(ds))
 	for _, t := range ds {
 		items = append(items, phanHoiYeuCau{
-			RequestID: t.Ma,
-			Kind:      kindTu(t.Loai),
-			Status:    t.TrangThai,
-			CreatedAt: t.TaoLuc.UTC().Format(time.RFC3339),
+			RequestID:  t.Ma,
+			Kind:       kindTu(t.Loai),
+			Status:     t.TrangThai,
+			CreatedAt:  t.TaoLuc.UTC().Format(time.RFC3339),
+			PhotoCount: t.PhotoCount,
 		})
 	}
 	s.traJSON(w, http.StatusOK, phanHoiDanhSach{Items: items})
