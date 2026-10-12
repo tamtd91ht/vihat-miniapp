@@ -172,6 +172,20 @@ spec:
                   name: vihat-miniapp-bi-mat
                   key: REQUEST_WEBHOOK_SECRET
                   optional: true
+            # Link tai anh trong webhook request.photo_added — tuy chon, DI CAP,
+            # chi khi webhook bat (config.Nap tu choi khoi dong neu khong).
+            - name: PUBLIC_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: vihat-miniapp-cau-hinh
+                  key: PUBLIC_API_BASE_URL
+                  optional: true
+            - name: REQUEST_PHOTO_URL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: vihat-miniapp-bi-mat
+                  key: REQUEST_PHOTO_URL_SECRET
+                  optional: true
 
           # ===================================================================
           #  THĂM DÒ — /healthz CÓ CHẠM CSDL, nên nó trả 503 khi mất kết nối.

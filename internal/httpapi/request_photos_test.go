@@ -88,7 +88,7 @@ func (f *fakePhotoStore) AddRequestPhoto(_ context.Context, userID, requestID, c
 	}
 	n := len(f.photos[requestID]) + 1
 	m := store.PhotoMeta{
-		ID: "3f1c0c9e-0000-4000-8000-00000000f00" + string(rune('0'+n)), RequestID: requestID,
+		ID: "3f1c0c9e-0000-4000-8000-00000000f00" + string(rune('0'+len(f.bytes)+1)), RequestID: requestID,
 		Position: n, ContentType: ct, SizeBytes: len(data), CreatedAt: time.Unix(1760000000, 0),
 	}
 	f.photos[requestID] = append(f.photos[requestID], m)
@@ -103,6 +103,20 @@ func (f *fakePhotoStore) ListRequestPhotos(_ context.Context, userID, requestID 
 		return nil, store.ErrPhotoNotFound
 	}
 	return f.photos[requestID], nil
+}
+
+// ReadPhotoForDownload mirrors the store: no owner, but an anonymised request has nothing.
+func (f *fakePhotoStore) ReadPhotoForDownload(_ context.Context, photoID string) (string, []byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for reqID, ms := range f.photos {
+		for _, m := range ms {
+			if m.ID == photoID && !f.requests[reqID].anonymised {
+				return m.ContentType, f.bytes[photoID], nil
+			}
+		}
+	}
+	return "", nil, store.ErrPhotoNotFound
 }
 
 func (f *fakePhotoStore) ReadRequestPhoto(_ context.Context, userID, requestID, photoID string) (string, []byte, error) {

@@ -201,3 +201,31 @@ func (k *Kho) ReadRequestPhoto(ctx context.Context, userID, requestID, photoID s
 	}
 	return ct, data, nil
 }
+
+// No owner condition — the caller has verified a signed link for exactly this photo id
+// (httpapi/request_photo_links.go). The anonymisation conditions ARE here: an erased photo
+// (or one on an anonymised request) is not found, whatever link points at it.
+const sqlReadPhotoForDownload = `
+	SELECT p.content_type, p.data
+	  FROM request_photo p
+	  JOIN yeu_cau y ON y.id = p.request_id
+	 WHERE p.id = $1
+	   AND y.an_danh_luc IS NULL AND p.anonymised_at IS NULL AND p.data IS NOT NULL`
+
+// ReadPhotoForDownload returns one photo's bytes for a verified signed link.
+func (k *Kho) ReadPhotoForDownload(ctx context.Context, photoID string) (string, []byte, error) {
+	pid, err := uuidTu(photoID)
+	if err != nil {
+		return "", nil, ErrPhotoNotFound
+	}
+	var ct string
+	var data []byte
+	err = k.pool.QueryRow(ctx, sqlReadPhotoForDownload, pid).Scan(&ct, &data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, ErrPhotoNotFound
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("đọc ảnh theo link: %w", err)
+	}
+	return ct, data, nil
+}

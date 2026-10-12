@@ -64,3 +64,7 @@ data:
 
   # URL nhận sự kiện request.created. CHỈ https:// — thân mang số điện thoại.
   REQUEST_WEBHOOK_URL: "<dien-vao-url-https-nhan-su-kien>"
+
+  # Địa chỉ API này như BÊN NHẬN WEBHOOK gọi tới — gốc của link tải ảnh trong sự
+  # kiện request.photo_added. https://, không ?/#. Đi CẶP với REQUEST_PHOTO_URL_SECRET.
+  PUBLIC_API_BASE_URL: "<dien-vao-url-https-cong-khai-cua-api>"

@@ -114,7 +114,29 @@ type Config struct {
 	WebhookURL string
 	// WebhookKhoa: khoá ký HMAC, >= WebhookKhoaToiThieu byte.
 	WebhookKhoa secret.Secret
+
+	// ---------------------------------------------------------------------
+	// SIGNED PHOTO LINKS in the `request.photo_added` webhook (owner 12/10/2026,
+	// internal/photo/link.go). TWO variables, both or neither, and only with the
+	// webhook on — a link nobody is sent is a link nobody needs.
+	//
+	// Off (both empty): photos are still stored, the event is simply not sent — the
+	// same "missing third-party config turns the feature off" rule as ZNS.
+	// ---------------------------------------------------------------------
+
+	// PublicAPIBaseURL: this API's address AS THE WEBHOOK RECEIVER REACHES IT, https,
+	// optionally with a path prefix. Configured, never taken from the request's Host
+	// header: a client choosing the host in a link we sign is a client pointing our
+	// specialists at a server of its choice.
+	PublicAPIBaseURL string
+	// PhotoLinkKey: HMAC key of the links, >= PhotoLinkKeyMinLen bytes. NOT the
+	// webhook key: the receiver holds that one, and could then mint a link for any
+	// photo id.
+	PhotoLinkKey secret.Secret
 }
+
+// PhotoLinksOn — signed photo links (and so the photo event) are configured.
+func (c Config) PhotoLinksOn() bool { return c.PublicAPIBaseURL != "" }
 
 // WebhookBat — webhook có được cấu hình hay không. Nap đã bảo đảm hai biến đi
 // cùng nhau.
@@ -179,6 +201,14 @@ const (
 	// dài khối đầu ra của SHA-256: khoá HMAC ngắn hơn thế là khoá yếu hơn chính
 	// hàm băm. Cùng con số với khoá cầu ViGov để người vận hành chỉ phải nhớ một.
 	WebhookKhoaToiThieu = 32
+
+	// Signed photo links — role names (`REQUEST_PHOTO_` = photos of a request), like
+	// REQUEST_WEBHOOK_.
+	EnvPublicAPIBaseURL = "PUBLIC_API_BASE_URL"
+	EnvPhotoLinkKey     = "REQUEST_PHOTO_URL_SECRET"
+
+	// PhotoLinkKeyMinLen — same 32 bytes as the webhook key, same reason.
+	PhotoLinkKeyMinLen = 32
 
 	listenAddrMacDinh = ":8080"
 )
@@ -299,6 +329,35 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 		cfg.WebhookKhoa = secret.Secret(khoaWebhook)
 	}
 
+	// Signed photo links: optional, HALF A GROUP IS REFUSED, and on without the
+	// webhook is refused too — the operator would believe specialists get links.
+	baseURL, linkKey := tuyChon(EnvPublicAPIBaseURL), tuyChon(EnvPhotoLinkKey)
+	switch {
+	case baseURL == "" && linkKey == "":
+		// Off. Photos are stored; no photo event is sent.
+	case baseURL == "" || linkKey == "":
+		loi = append(loi, "link tải ảnh nửa cấu hình: "+EnvPublicAPIBaseURL+" và "+
+			EnvPhotoLinkKey+" phải cùng có hoặc cùng trống")
+	default:
+		if urlWebhook == "" {
+			loi = append(loi, EnvPublicAPIBaseURL+"/"+EnvPhotoLinkKey+" có giá trị nhưng webhook ("+
+				EnvWebhookURL+") chưa cấu hình — link tải ảnh chỉ được gửi qua webhook")
+		}
+		if !laURLGoc(baseURL) {
+			loi = append(loi, EnvPublicAPIBaseURL+": phải là URL https:// tuyệt đối, có host, không kèm "+
+				"user:pass, chuỗi truy vấn hay #")
+		}
+		if len(linkKey) < PhotoLinkKeyMinLen {
+			loi = append(loi, fmt.Sprintf("%s: khoá ký phải dài ít nhất %d byte", EnvPhotoLinkKey, PhotoLinkKeyMinLen))
+		}
+		if linkKey == khoaWebhook {
+			loi = append(loi, EnvPhotoLinkKey+" trùng "+EnvWebhookKhoa+" — bên nhận webhook giữ khoá ấy và sẽ "+
+				"tự ký được link tải mọi ảnh; dùng một khoá riêng")
+		}
+		cfg.PublicAPIBaseURL = strings.TrimSuffix(baseURL, "/")
+		cfg.PhotoLinkKey = secret.Secret(linkKey)
+	}
+
 	if len(thieu) > 0 {
 		loi = append(loi, "thiếu biến bắt buộc: "+strings.Join(thieu, ", "))
 	}
@@ -313,6 +372,12 @@ func Nap(look func(string) (string, bool)) (Config, error) {
 func laURLHTTPS(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != "" && u.User == nil
+}
+
+// laURLGoc — an https base URL a path can be appended to: no query, no fragment.
+func laURLGoc(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && laURLHTTPS(raw) && u.RawQuery == "" && u.Fragment == "" && !strings.Contains(raw, "?")
 }
 
 // NapTuMoiTruong là lối vào dùng trong sản xuất.

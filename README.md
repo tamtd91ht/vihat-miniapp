@@ -142,7 +142,7 @@ Lý do dùng quyền camera / thư viện ảnh trong hồ sơ duyệt Zalo. Mã
 | Kiểu | **JPEG / PNG / WebP**, dò từ **byte đầu** (số ma thuật) | tên tệp và Content-Type của client không được tin |
 | Siêu dữ liệu | **bỏ** EXIF/XMP/COM (JPEG), eXIf/tEXt/zTXt/iTXt/tIME (PNG), EXIF/XMP (WebP); điểm ảnh chép nguyên, **không mã hoá lại** | EXIF mang toạ độ GPS nơi chụp. Cái giá: mất cờ xoay EXIF — ảnh chụp dọc có thể hiện nằm ngang |
 | Loại yêu cầu | chỉ `consult` (`tu_van`) | đúng màn đã chốt; loại khác → 409 `photo_not_allowed` |
-| Ai đọc | **chỉ chủ phiếu**, qua phiên; mọi câu SQL có `nguoi_dung_id` của phiên | phiếu của người khác / không có / đã ẩn danh: **cùng một** 404 |
+| Ai đọc | **chủ phiếu**, qua phiên (mọi câu SQL có `nguoi_dung_id` của phiên); **chuyên viên ViHAT** qua link có ký 24 giờ trong webhook `request.photo_added` | phiếu của người khác / không có / đã ẩn danh: **cùng một** 404 |
 | Lưu | `bytea` trong `request_photo`, giữ **bằng hạn của yêu cầu** (24 tháng) | không có kho đối tượng; ẩn danh nằm cùng giao dịch |
 | Xoá | `make an-danh` và hàm dọn 24 tháng **xoá byte + sha256**, giữ hàng | ảnh là dữ liệu cá nhân (người, nhà, biển số) |
 | Log | chỉ mã yêu cầu, mã ảnh, kiểu, số byte | **không** tên tệp của client, **không** byte |
@@ -194,7 +194,42 @@ POST <REQUEST_WEBHOOK_URL>
 
 Bên nhận kiểm chữ ký trên **đúng byte nhận được** (không parse rồi serialize lại), so bằng hàm
 so sánh thời gian hằng định. Chữ ký **không** kèm dấu thời gian, nên nó không chống phát lại
-— xem NỢ #17.
+— xem NỢ #17. Mọi sự kiện mang header `Idempotency-Key` (`requestId` cho `request.created`,
+`photoId` cho `request.photo_added`) — khoá khử trùng, trùng với id trong thân.
+
+### Sự kiện `request.photo_added` — link tải ảnh có hạn (chủ sản phẩm chốt 12/10/2026)
+
+Bật khi webhook bật **và** `PUBLIC_API_BASE_URL` + `REQUEST_PHOTO_URL_SECRET` được đặt. Sau mỗi
+201 của `POST /api/v1/requests/{id}/photos`, máy chủ gửi **một** sự kiện sang **cùng**
+`REQUEST_WEBHOOK_URL`, **cùng** chữ ký, **cùng** chính sách 2 lượt / chạy nền / ít nhất một lần
+như `request.created`. Mã: `internal/httpapi/request_photo_links.go`, `internal/photo/link.go`,
+`internal/webhook` (`SendPhotoAdded`), `internal/yeucau` (`ReportPhotoAdded`).
+
+```
+POST <REQUEST_WEBHOOK_URL>
+  X-Vihat-Signature: sha256=<hex HMAC-SHA256(REQUEST_WEBHOOK_SECRET, thân THÔ)>
+  Idempotency-Key: <photoId>
+  {"event": "request.photo_added", "requestId": "<uuid>", "photoId": "<uuid>",
+   "position": 1..3, "contentType": "image/jpeg|image/png|image/webp", "size": <byte>,
+   "createdAt": "<RFC3339>",
+   "downloadUrl": "<PUBLIC_API_BASE_URL>/api/v1/request-photos/<photoId>?exp=<unix>&sig=<hex>",
+   "expiresAt": "<RFC3339, = exp>"}
+
+GET /api/v1/request-photos/{photoId}?exp=<unix>&sig=<hex>     CÔNG KHAI — link là chứng từ
+  sig = hex HMAC-SHA256(REQUEST_PHOTO_URL_SECRET, "request-photo:v1\n" + photoId + "\n" + exp)
+  200: byte ảnh · Cache-Control: private, no-store · nosniff · CSP sandbox
+  404 {"code":"not_found"}  hết hạn · sai/sửa chữ ký · id lạ · ảnh đã ẩn danh · link tắt — MỘT thân
+  405 method_not_allowed · 429 {"code":"rate_limited"} (xô IP riêng, 20/5 phút)
+```
+
+| Điều | Giá trị | Vì sao |
+|---|---|---|
+| Thân | **không** số điện thoại, tên, ghi chú | bên nhận nối với `request.created` theo `requestId` |
+| Hạn link | **24 giờ** (`photo.LinkTTL`, hằng — chính sách, không phải biến) | đủ cho chuyên viên mở sáng hôm sau; một link bị chuyển tiếp / lọt log bên nhận hết tác dụng sau một ngày |
+| Hết hạn rồi | mở lại ảnh qua Mini App không được (chỉ chủ phiếu); chưa có đường xin link mới | xin link mới là một quyết định mới — chưa ai yêu cầu |
+| Ẩn danh | link cũ trả 404 ngay khi byte bị xoá | không có bản sao nào ngoài CSDL |
+| Log | chỉ mã yêu cầu, mã ảnh | **không bao giờ** `downloadUrl` hay `sig` — link là chứng từ |
+| Mất sự kiện | hai lượt hỏng → mất (log Error kèm `ma_anh`), ảnh vẫn lưu | cùng giới hạn NỢ #17 (b) |
 
 | Mã | Khi nào | Câu trả về |
 |---|---|---|
@@ -359,6 +394,8 @@ một lần, không bắt người vận hành khởi động lại năm lượt
 | `ZALO_MINIAPP_COMMUNE_APP_SECRETS` | không, **bí mật** | app **riêng** của xã: `<app_id>=<secret>,<app_id>=<secret>`. Có giá trị mà cầu tắt thì **không khởi động**; App ID phải là chữ số, không trùng app chung, không lặp |
 | `REQUEST_WEBHOOK_URL` | không, **đi cặp** | đích nhận sự kiện `request.created`; **chỉ `https://`** tuyệt đối có host, không `user:pass` — sai là **không khởi động**; một nửa cặp là **không khởi động** |
 | `REQUEST_WEBHOOK_SECRET` | không, **đi cặp**, **bí mật** | khoá ký HMAC-SHA256, ≥ 32 byte (`openssl rand -hex 32`); bên nhận giữ cùng khoá |
+| `PUBLIC_API_BASE_URL` | không, **đi cặp**, chỉ khi webhook bật | gốc của link tải ảnh trong `request.photo_added` — địa chỉ API này như **bên nhận webhook** gọi tới; `https://`, không `?`/`#`. Có tiền tố đường dẫn thì ingress phải bỏ tiền tố trước khi tới pod. Cấu hình, **không** lấy từ header `Host` |
+| `REQUEST_PHOTO_URL_SECRET` | không, **đi cặp**, **bí mật**, chỉ khi webhook bật | khoá ký link tải ảnh, ≥ 32 byte, **khác** `REQUEST_WEBHOOK_SECRET` (trùng là không khởi động — bên nhận giữ khoá webhook và sẽ tự ký được link mọi ảnh). Bên nhận **không** cần khoá này |
 | `TEST_DATABASE_DSN` | không | chỉ cho test chạm CSDL |
 
 Bí mật **không vào mã nguồn, không vào tài liệu, không vào `.env.example`** — mẫu chỉ có
@@ -646,7 +683,7 @@ hồ sơ duyệt Zalo, và khai thiếu một mục cũng là vi phạm chính N
 | Việc đã xử lý một yêu cầu xoá: ai tiếp nhận, nguồn, thời điểm | `nhat_ky_an_danh` | **chưa — nên khai**, kèm câu "chúng tôi lưu bằng chứng đã xử lý yêu cầu của bạn" |
 | **Tên hiển thị Zalo** khi bấm "Chat với chuyên viên" (0004) | `yeu_cau.ten_hien_thi` | **chưa — phải bổ sung** |
 | **Lần đăng ký / huỷ nhận SMS ưu đãi** (0004) | `yeu_cau.loai` | **chưa — phải bổ sung** |
-| Số điện thoại, tên hiển thị, ghi chú **gửi sang hệ thống bên nhận webhook** | không lưu ở đây — **chuyển cho bên thứ ba** | **chưa — phải bổ sung**, kèm tên bên nhận |
+| Số điện thoại, tên hiển thị, ghi chú — và **link tải ảnh 24 giờ** (`request.photo_added`) — **gửi sang hệ thống bên nhận webhook** | không lưu ở đây — **chuyển cho bên thứ ba** | **chưa — phải bổ sung**, kèm tên bên nhận |
 | **Ảnh người dùng đính kèm** yêu cầu tư vấn (0005), đã bỏ EXIF/GPS | `request_photo.data` | **chưa — phải bổ sung** (đi kèm hồ sơ duyệt quyền camera/ảnh) |
 
 Không lưu: email, vị trí, thông tin thiết bị, danh bạ. Không có bộ theo dõi
@@ -838,10 +875,11 @@ tới chúng. Đó đúng là phần chỉ **token thật** mới mở được.
 18. **Migration 0004 chưa chạy trên Postgres thật** (cùng nợ với 0001–0003, mục 8): hai ca
     `internal/store` mới (`TestAnDanhHoa_XoaGhiChuVaTenTrenYeuCau`, `TestYeuCau_RangBuocTenHienThi`)
     SKIP khi thiếu `TEST_DATABASE_DSN`.
-19. **Ảnh đính kèm (0005, 12/10/2026) — ba điều còn mở.** (a) **Chuyên viên ViHAT chưa có đường
-    đọc ảnh**: kho này không có màn quản trị, và webhook `request.created` bắn lúc tạo phiếu —
-    TRƯỚC khi ảnh được tải. Hôm nay chỉ đọc được bằng truy cập CSDL. Cần chủ sản phẩm chốt: một
-    sự kiện webhook `request.photo_added` kèm đường tải có ký, hay một tuyến quản trị riêng.
+19. **Ảnh đính kèm (0005, 12/10/2026).** (a) ~~Chuyên viên ViHAT chưa có đường đọc ảnh~~ —
+    **ĐÃ CHỐT VÀ ĐÃ LÀM 12/10/2026** (chủ sản phẩm: "Webhook kèm link tải có hạn"): sự kiện
+    `request.photo_added` mang `downloadUrl` có ký, sống 24 giờ — xem mục "Sự kiện
+    `request.photo_added`". Còn lại của (a): bên nhận phải khử trùng theo `photoId` và **không log
+    `downloadUrl`**; chưa thử với bên nhận thật. Hai điều còn mở:
     (b) **Không có trần ảnh theo người**: trần duy nhất là xô IP 20/5 phút và 3 ảnh/phiếu, mà số
     phiếu tư vấn thì không có trần — về lý thuyết một phiên tải được ~20 × 5 MB mỗi 5 phút. Cần
     chốt một trần ngày theo người nếu lưu lượng thật cho thấy lạm dụng. (c) Migration 0005

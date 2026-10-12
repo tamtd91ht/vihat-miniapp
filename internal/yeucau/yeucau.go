@@ -251,8 +251,10 @@ type DichVu struct {
 	tongDai TongDai
 	zns     BoGuiZNS
 	webhook BaoWebhook
-	log     *slog.Logger
-	now     func() time.Time
+	// photoWebhook — the same sender seen as BaoAnhWebhook; nil when it is not one.
+	photoWebhook BaoAnhWebhook
+	log          *slog.Logger
+	now          func() time.Time
 
 	// viecNen đếm các lần báo webhook đang chạy nền — để tắt êm chờ được chúng
 	// (`ChoViecNen`) thay vì cắt ngang giữa một lần gửi.
@@ -274,7 +276,63 @@ func Moi(kho Kho, tongDai TongDai, zns BoGuiZNS, log *slog.Logger) *DichVu {
 // nil-interface ở cmd/server.
 func (d *DichVu) VoiWebhook(w BaoWebhook) *DichVu {
 	d.webhook = w
+	// The photo event rides the SAME sender when it can (internal/webhook.Client does):
+	// one destination, one key, one retry policy — not a second webhook to configure.
+	d.photoWebhook, _ = w.(BaoAnhWebhook)
 	return d
+}
+
+// SuKienAnh — a photo stored on a request (README NỢ #19 (a), owner 12/10/2026). Business
+// struct; the wire shape lives in internal/webhook.
+//
+// NO phone, NO name, NO note — by design. DownloadURL is a short-lived CREDENTIAL to the
+// photo: it goes to the sender and nowhere else, never into a log.
+type SuKienAnh struct {
+	RequestID   string
+	PhotoID     string
+	Position    int
+	ContentType string
+	Size        int
+	CreatedAt   time.Time
+	DownloadURL string
+	ExpiresAt   time.Time
+}
+
+// BaoAnhWebhook sends request.photo_added. Implemented by *webhook.Client.
+type BaoAnhWebhook interface {
+	SendPhotoAdded(ctx context.Context, ev SuKienAnh) error
+}
+
+// CoBaoAnh — whether a photo event would go anywhere.
+func (d *DichVu) CoBaoAnh() bool { return d.photoWebhook != nil }
+
+// ReportPhotoAdded sends a stored photo's event IN THE BACKGROUND — the same three rules as
+// baoYeuCauMoi: only after the commit (the caller calls it after AddRequestPhoto
+// succeeded), never slows or fails the HTTP answer, panics swallowed. At least once: the
+// sender retries once and the receiver de-duplicates on PhotoID. Two failed attempts lose
+// the event (no durable queue, same as request.created); the photo stays stored.
+func (d *DichVu) ReportPhotoAdded(ctx context.Context, ev SuKienAnh) {
+	if d.photoWebhook == nil {
+		return
+	}
+	ctxNen := context.WithoutCancel(ctx)
+	d.viecNen.Add(1)
+	go func() {
+		defer d.viecNen.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				d.log.Error("báo webhook ảnh hỏng giữa chừng (panic)", "ma_yeu_cau", ev.RequestID, "ma_anh", ev.PhotoID)
+			}
+		}()
+		ctx, huy := context.WithTimeout(ctxNen, ThoiHanBaoWebhook)
+		defer huy()
+		// Log ids only — never ev.DownloadURL (it opens the photo).
+		if err := d.photoWebhook.SendPhotoAdded(ctx, ev); err != nil {
+			d.log.Error("webhook không nhận sự kiện ảnh", "ma_yeu_cau", ev.RequestID, "ma_anh", ev.PhotoID, "loi", err.Error())
+			return
+		}
+		d.log.Info("webhook đã nhận sự kiện ảnh", "ma_yeu_cau", ev.RequestID, "ma_anh", ev.PhotoID)
+	}()
 }
 
 // ChoViecNen chờ mọi lần báo webhook đang chạy nền xong, tối đa tới khi ctx hết.

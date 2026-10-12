@@ -42,6 +42,9 @@ type RequestPhotoStore interface {
 	AddRequestPhoto(ctx context.Context, userID, requestID, contentType string, data []byte) (store.PhotoMeta, error)
 	ListRequestPhotos(ctx context.Context, userID, requestID string) ([]store.PhotoMeta, error)
 	ReadRequestPhoto(ctx context.Context, userID, requestID, photoID string) (string, []byte, error)
+	// ReadPhotoForDownload — NO owner: only ever called after a signed link verified
+	// (request_photo_links.go).
+	ReadPhotoForDownload(ctx context.Context, photoID string) (string, []byte, error)
 }
 
 // WithRequestPhotos wires the photo routes. Separate from VoiYeuCau for the same reason
@@ -71,6 +74,7 @@ const (
 	photoCodeMethod          = "method_not_allowed"
 	photoCodeUnavailable     = "photo_unavailable"
 	photoCodeInternal        = "internal_error"
+	photoCodeRateLimited     = "rate_limited" // signed-link route only
 )
 
 const (
@@ -232,6 +236,9 @@ func (s *Server) uploadRequestPhoto(w http.ResponseWriter, r *http.Request, user
 	s.log.Info("nhận ảnh yêu cầu", "ma_yeu_cau", m.RequestID, "ma_anh", m.ID,
 		"kieu", m.ContentType, "so_byte", m.SizeBytes, "thu_tu", m.Position)
 	s.traJSON(w, http.StatusCreated, toPhotoOut(m))
+	// After the commit and after the answer is written: the event can never hold up or
+	// fail the citizen's upload.
+	s.photoEvent(r, m)
 }
 
 // uploadReadError: the body cap tripping is a 413; anything else while reading multipart is
@@ -274,6 +281,11 @@ func (s *Server) readRequestPhoto(w http.ResponseWriter, r *http.Request, userID
 		s.photoError(w, http.StatusInternalServerError, photoCodeInternal, loiHeThong)
 		return
 	}
+	s.writePhoto(w, ct, data)
+}
+
+// writePhoto — the one way photo bytes leave this server (owner route and signed link).
+func (s *Server) writePhoto(w http.ResponseWriter, ct string, data []byte) {
 	h := w.Header()
 	h.Set("Content-Type", ct)
 	h.Set("Content-Length", strconv.Itoa(len(data)))

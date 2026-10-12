@@ -94,9 +94,19 @@ func TestAnDanhHoa_ErasesPhotoBytes(t *testing.T) {
 	k := moKhoTest(t)
 	ctx := context.Background()
 	user, req := newUserWithRequest(t, k, yeucau.LoaiTuVan)
-	if _, err := k.AddRequestPhoto(ctx, user, req, photo.TypeJPEG, fakeJPEG); err != nil {
+	m, err := k.AddRequestPhoto(ctx, user, req, photo.TypeJPEG, fakeJPEG)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, data, err := k.ReadPhotoForDownload(ctx, m.ID); err != nil || string(data) != string(fakeJPEG) {
+		t.Fatalf("download read before erasure: %v", err)
+	}
+	defer func() {
+		// A signed link issued before the erasure must stop working with it.
+		if _, _, err := k.ReadPhotoForDownload(ctx, m.ID); !errors.Is(err, ErrPhotoNotFound) {
+			t.Errorf("download read after erasure: %v, want ErrPhotoNotFound", err)
+		}
+	}()
 	var so string
 	if err := k.pool.QueryRow(ctx, `SELECT so_dien_thoai FROM nguoi_dung WHERE id = $1`, user).Scan(&so); err != nil {
 		t.Fatal(err)

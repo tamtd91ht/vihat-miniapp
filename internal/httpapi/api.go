@@ -18,6 +18,7 @@ import (
 
 	"github.com/vihat/vihat-miniapp/internal/config"
 	"github.com/vihat/vihat-miniapp/internal/phien"
+	"github.com/vihat/vihat-miniapp/internal/secret"
 	"github.com/vihat/vihat-miniapp/internal/vigovcau"
 	"github.com/vihat/vihat-miniapp/internal/yeucau"
 )
@@ -84,6 +85,12 @@ type Server struct {
 	// Photos on a consult request — see request_photos.go. nil = not wired: the routes
 	// still exist and answer 503.
 	photos RequestPhotoStore
+
+	// Signed photo links + the request.photo_added event — request_photo_links.go.
+	// Empty base = off. downloadLimit: own bucket, same family and size as /requests.
+	photoLinkBase string
+	photoLinkKey  secret.Secret
+	downloadLimit *GioiHanIP
 }
 
 func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Server {
@@ -102,6 +109,7 @@ func Moi(kho Kho, zalo DoiTokenZalo, cfg config.Config, log *slog.Logger) *Serve
 		appIDChung: cfg.ZaloAppID,
 
 		clientErrorLimit: MoiGioiHan(clientErrorMaxReports, clientErrorWindow),
+		downloadLimit:    MoiGioiHan(SoLuotYeuCauToiDa, CuaSoYeuCau),
 	}
 }
 
@@ -167,6 +175,9 @@ func (s *Server) VoiCauPhienViGov(cau CauPhienViGov, maZalo MaTaiKhoanZalo, appI
 //	                        hạn: theo IP ở đây, theo NGƯỜI ở internal/yeucau.
 //	/api/v1/requests/{id}/photos[/{photoId}] — CẦN XÁC THỰC, cùng `gacYeuCau`. Ảnh
 //	                        đính kèm yêu cầu tư vấn, chỉ của CHÍNH MÌNH — request_photos.go.
+//	GET  /api/v1/request-photos/{photoId}?exp=&sig= — CÔNG KHAI, link có ký và có hạn
+//	                        24 giờ gửi cho chuyên viên qua webhook; xô IP riêng —
+//	                        request_photo_links.go.
 //
 // ⚠ TUYẾN `/api/v1/requests` LUÔN ĐƯỢC GẮN, KỂ CẢ KHI `VoiYeuCau` CHƯA ĐƯỢC GỌI.
 //
@@ -183,6 +194,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/requests", s.gacYeuCau(s.requests))
 	// /api/v1/requests/{id}/photos[/{photoId}] — same IP bucket, same bearer check.
 	mux.HandleFunc(requestPhotosPrefix, s.gacYeuCau(s.requestSubtree))
+	// PUBLIC — the signed, expiring link of the photo webhook is the credential.
+	mux.HandleFunc(requestPhotoDownloadPrefix, s.downloadRequestPhoto)
 	mux.HandleFunc("/healthz", s.healthz)
 	s.mountWebhookZalo(mux)
 	return s.cors.boc(mux)

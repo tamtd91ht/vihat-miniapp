@@ -166,11 +166,61 @@ func (c *Client) Gui(ctx context.Context, sk yeucau.SuKienYeuCau) error {
 	if err != nil {
 		return errors.New("webhook: dựng thân sự kiện hỏng")
 	}
+	return c.send(ctx, than, sk.MaYeuCau)
+}
+
+// TenSuKienAnh — `event` of the photo event (owner 12/10/2026, README NỢ #19 (a)).
+const TenSuKienAnh = "request.photo_added"
+
+// HeaderIdempotency — the receiver's de-duplication key: requestId for request.created,
+// photoId for request.photo_added. Delivery is at least once (see the package comment), so
+// the receiver MUST drop a second event with a key it has already processed.
+const HeaderIdempotency = "Idempotency-Key"
+
+// thanSuKienAnh — WIRE SHAPE of request.photo_added. Deliberately no phone, no name, no
+// note: the receiver joins on requestId to the request.created it already holds.
+//
+// ⚠ downloadUrl IS A CREDENTIAL until expiresAt: whoever holds it reads that photo. The
+// receiver must not log it or forward it beyond the specialist who needs it.
+type thanSuKienAnh struct {
+	Event       string `json:"event"`
+	RequestID   string `json:"requestId"`
+	PhotoID     string `json:"photoId"`
+	Position    int    `json:"position"`
+	ContentType string `json:"contentType"`
+	Size        int    `json:"size"`
+	CreatedAt   string `json:"createdAt"`
+	DownloadURL string `json:"downloadUrl"`
+	ExpiresAt   string `json:"expiresAt"`
+}
+
+// SendPhotoAdded POSTs one request.photo_added event: same URL, same signature, same
+// one-retry policy as Gui. Implements yeucau.BaoAnhWebhook.
+func (c *Client) SendPhotoAdded(ctx context.Context, ev yeucau.SuKienAnh) error {
+	than, err := json.Marshal(thanSuKienAnh{
+		Event:       TenSuKienAnh,
+		RequestID:   ev.RequestID,
+		PhotoID:     ev.PhotoID,
+		Position:    ev.Position,
+		ContentType: ev.ContentType,
+		Size:        ev.Size,
+		CreatedAt:   ev.CreatedAt.UTC().Format(time.RFC3339),
+		DownloadURL: ev.DownloadURL,
+		ExpiresAt:   ev.ExpiresAt.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return errors.New("webhook: dựng thân sự kiện ảnh hỏng")
+	}
+	return c.send(ctx, than, ev.PhotoID)
+}
+
+// send signs the raw body and delivers it with at most one retry.
+func (c *Client) send(ctx context.Context, than []byte, khoaLap string) error {
 	chuKy := KyThan([]byte(c.khoa.Lo()), than)
 
 	var loiCuoi error
 	for luot := 1; luot <= soLuotToiDa; luot++ {
-		thuLai, err := c.guiMotLuot(ctx, than, chuKy)
+		thuLai, err := c.guiMotLuot(ctx, than, chuKy, khoaLap)
 		if err == nil {
 			return nil
 		}
@@ -188,13 +238,16 @@ func (c *Client) Gui(ctx context.Context, sk yeucau.SuKienYeuCau) error {
 }
 
 // guiMotLuot trả (có nên thử lại không, lỗi).
-func (c *Client) guiMotLuot(ctx context.Context, than []byte, chuKy string) (bool, error) {
+func (c *Client) guiMotLuot(ctx context.Context, than []byte, chuKy, khoaLap string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(than))
 	if err != nil {
 		return false, errors.New("webhook: dựng yêu cầu HTTP hỏng")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderChuKy, chuKy)
+	// Not covered by the signature (the body carries the same id, and it is): a header the
+	// receiver can de-duplicate on before parsing.
+	req.Header.Set(HeaderIdempotency, khoaLap)
 
 	res, err := c.hc.Do(req)
 	if err != nil {

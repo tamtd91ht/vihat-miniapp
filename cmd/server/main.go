@@ -110,6 +110,7 @@ func chay(log *slog.Logger) error {
 		baoWebhook = wh
 	}
 	log.Info("webhook yêu cầu mới", "bat", baoWebhook != nil)
+	log.Info("webhook ảnh kèm link tải", "bat", baoWebhook != nil && cfg.PhotoLinksOn())
 
 	dvYeuCau := yeucau.Moi(kho, goiRa, guiZNS, log).VoiWebhook(baoWebhook)
 
@@ -119,6 +120,9 @@ func chay(log *slog.Logger) error {
 	api := httpapi.Moi(kho, clientZalo, cfg, log).
 		VoiYeuCau(kho, dvYeuCau).
 		WithRequestPhotos(kho). // needs migrations/0005
+		// Signed photo links + request.photo_added (config.Nap only allows them with the
+		// webhook on). Off = photos stored, no event, every link 404.
+		WithPhotoLinks(cfg.PublicAPIBaseURL, cfg.PhotoLinkKey).
 		VoiViTri(clientZalo)
 
 	// App RIÊNG của xã: mỗi app một client mang secret của chính nó. In SỐ app

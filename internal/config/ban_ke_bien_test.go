@@ -48,6 +48,9 @@ var banKe = []struct {
 	// Hai biến TUỲ CHỌN của webhook "yêu cầu mới" — cả hai hoặc không biến nào.
 	{EnvWebhookURL, false, true, "configmap.example.yaml"},
 	{EnvWebhookKhoa, true, true, "secret.example.yaml"},
+	// Signed photo links in the photo webhook — both or neither, only with the webhook.
+	{EnvPublicAPIBaseURL, false, true, "configmap.example.yaml"},
+	{EnvPhotoLinkKey, true, true, "secret.example.yaml"},
 	// Chỉ dùng cho `go test ./internal/store`. Không bao giờ lên cụm: một CSDL
 	// test khai báo trong môi trường sản xuất là một CSDL test sẽ bị ai đó ghi vào.
 	{"TEST_DATABASE_DSN", false, false, ""},
