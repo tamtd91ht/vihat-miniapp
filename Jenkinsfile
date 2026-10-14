@@ -1,9 +1,14 @@
 // Pipeline của `vihat-miniapp`.
 //
 //   · build CÁI GÌ   — đúng một ảnh, `vihat-miniapp`
-//   · build KHI NÀO  — mọi lần `main` nhích lên. Xem §"Vì sao KHÔNG có bộ lọc dựng lại"
+//   · build KHI NÀO  — mọi lần `dev` hoặc `main` nhích lên. Xem §"Vì sao KHÔNG có bộ lọc dựng lại"
 //   · đẩy ĐI ĐÂU     — hằng số REGISTRY/PROJECT trong khối `environment` ngay dưới
-//   · chạy lên ĐÂU    — hằng số KUBECONFIG/NS/TEN_K8S cùng khối
+//   · chạy lên ĐÂU    — KUBECONFIG/TEN_K8S cùng khối; namespace theo NHÁNH, xem `namespaceForBranch()`
+//                      cuối tệp (dev → vigov-dev, main → vigov-prod)
+//
+// JOB MULTIBRANCH (chủ dự án 14/10/2026): một job Multibranch Pipeline quét `dev` và `main`; mỗi
+// nhánh đặt ảnh vào ĐÚNG namespace của nó. Cùng quy ước với các Jenkinsfile của ViGov, để bản
+// vihat-miniapp dev nằm cạnh identity dev (cầu phiên không TLS chỉ đi được trong một namespace).
 //
 // TỪ 08/10/2026 JOB ĐẶT ẢNH LÊN CỤM (chủ dự án: "build jenkins thì k8s tự kéo ảnh từ harbor về
 // deploy luôn"), cùng cách các job dịch vụ của ViGov đang chạy: `kubectl set image` +
@@ -40,8 +45,8 @@ pipeline {
     // Cùng cụm, cùng namespace với ViGov: cầu phiên tới identity đi không TLS nên chỉ chấp nhận
     // được khi hai bên cùng namespace (ADR 0045 của ViGov). KUBECONFIG là tệp trên đĩa máy chủ
     // mà các job ViGov đang dùng; cạnh nó là `rancher-omi.yaml` của dự án khác — đừng chép nhầm.
+    // NS KHÔNG còn là hằng số: `namespaceForBranch()` đặt nó ở đầu stage 'Chuẩn bị'.
     KUBECONFIG = '/u01/rancher/rancher-vigov.yaml'
-    NS = 'vigov-prod'
     // Tên Deployment THẬT trên cụm (dựng tay trong Rancher). Khác tên này thì stage 'Chuẩn bị'
     // dừng trước khi dựng và in cách tìm tên đúng.
     TEN_K8S = 'vihat-zalo-miniapp'   // tên thật trong Rancher (lượt kiem-tra của vigov-deploy, 08/10/2026)
@@ -51,6 +56,9 @@ pipeline {
 
     stage('Chuẩn bị') {
       steps {
+        // NAMESPACE TRƯỚC MỌI THỨ: mọi bước dưới đây và `post { failure }` đọc $NS.
+        script { env.NS = namespaceForBranch() }
+
         // BỐN công cụ, và `gcc` nằm trong danh sách vì một lý do không hiển nhiên: `make
         // check` chạy `go test -race`, mà `-race` cần cgo, tức cần một trình biên dịch C.
         // Thiếu nó thì lỗi rơi vào giữa cổng kiểm dưới dạng "race is only supported on ...
@@ -227,6 +235,7 @@ pipeline {
       // Chạy cho MỌI stage đỏ, kể cả cổng kiểm. Không có cờ `DA_DAT` thì một test đỏ cũng
       // `rollout undo` — rút lại đúng bản ĐANG CHẠY TỐT.
       script {
+        // `!= 'roi'` also covers a run that died in namespaceForBranch(): NS unset, nothing touched.
         if (env.DA_DAT != 'roi') {
           echo 'Đỏ TRƯỚC khi chạm cụm — không có gì để rút lại.'
         } else {
@@ -252,7 +261,8 @@ pipeline {
 // Cơ chế ấy tồn tại vì ở đó CHÍN JOB DÙNG CHUNG MỘT KHO: một lần push đụng một dịch vụ mà làm
 // chín lượt đóng ảnh thì tám lượt là rác.
 //
-// Kho này có MỘT job và MỘT kho. Mọi commit vào `main` đều là thay đổi của chính dịch vụ này,
+// Kho này có MỘT job (multibranch: mỗi nhánh một lượt riêng) và MỘT kho. Mọi commit vào `dev`/`main`
+// đều là thay đổi của chính dịch vụ này,
 // nên bộ lọc sẽ trả `true` ở mọi lượt — tức năm mươi dòng logic, một trạng thái ẩn nằm trong
 // `description` của lượt build, và một lớp mà người sau phải đọc xong mới dám sửa, tất cả để
 // đi tới đúng câu trả lời mà không có nó cũng có.
@@ -272,3 +282,31 @@ pipeline {
 //     ViGov). Nó là một bước có người bấm, trước khi lăn bản mới. Một job đóng ảnh mà tự chạy
 //     migration là một job đổi lược đồ của môi trường thật mà không ai yêu cầu.
 // ─────────────────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// NHÁNH QUYẾT ĐỊNH NAMESPACE (chủ dự án 14/10/2026): `dev` → vigov-dev, `main` → vigov-prod —
+// đúng ánh xạ của `namespaceForBranch()` trong các Jenkinsfile ViGov, vì bản vihat-miniapp của
+// mỗi môi trường phải nằm CÙNG namespace với identity của môi trường ấy (cầu phiên, ADR 0045).
+//
+// Không phải `parameters {}` — cùng lý do REGISTRY không phải: "lượt này đặt lên đâu" phải đọc
+// được từ mã và từ nhánh, không từ một ô nhập không ai xem lại được.
+//
+// Nhánh lạ hoặc không đọc được nhánh → DỪNG, KHÔNG rơi về prod: một nhánh thử nghiệm lặng lẽ đặt
+// ảnh lên vigov-prod là đúng loại hỏng không có gì đỏ. Job multibranch đặt BRANCH_NAME (`dev`);
+// job Pipeline thường đặt GIT_BRANCH (`origin/dev`). Chỉ dùng startsWith/substring, không regex:
+// phương thức ngoài danh sách cho phép của sandbox Groovy là lỗi lúc CHẠY.
+String namespaceForBranch() {
+  String branch = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: '').trim()
+  for (String prefix : ['refs/heads/', 'origin/']) {
+    if (branch.startsWith(prefix)) { branch = branch.substring(prefix.length()) }
+  }
+  String ns = ''
+  if (branch == 'dev') { ns = 'vigov-dev' }
+  if (branch == 'main') { ns = 'vigov-prod' }
+  if (!ns) {
+    error("Nhánh '${branch}' không gắn với môi trường nào — chỉ `dev` (vigov-dev) và `main` (vigov-prod) được triển khai.\n" +
+          'Job multibranch: lọc nhánh chỉ dev và main (Filter by name: dev main).')
+  }
+  echo "nhánh ${branch} → namespace ${ns}"
+  return ns
+}
